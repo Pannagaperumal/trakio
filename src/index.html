@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ola Maps</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="module" src="./main.js"></script>
+  </head>
+  <body>
+    <div id="app">
+
+      <!-- ── Sidebar ───────────────────────────────────────── -->
+      <aside id="sidebar">
+        <div class="sidebar-header">
+          <div class="brand">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+              <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z"/>
+              <circle cx="12" cy="10" r="3"/>
+            </svg>
+            Ola Maps
+          </div>
+          <button id="sidebar-close" class="icon-btn" title="Close">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+
+        <!-- Tabs -->
+        <nav class="tab-bar">
+          <button class="tab active" data-tab="search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+            Search
+          </button>
+          <button class="tab" data-tab="directions">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>
+            Directions
+          </button>
+        </nav>
+
+        <!-- Search Panel -->
+        <div class="panel active" id="panel-search">
+          <div class="search-field">
+            <div class="input-row">
+              <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+              </svg>
+              <input id="search-input" type="text" placeholder="Search places, addresses…" autocomplete="off" spellcheck="false" />
+              <button id="search-clear" class="clear-btn">✕</button>
+            </div>
+            <div id="search-dropdown" class="dropdown"></div>
+          </div>
+
+          <div id="search-card" class="place-card">
+            <p class="place-name" id="search-place-name"></p>
+            <p class="place-addr" id="search-place-addr"></p>
+            <div class="place-actions">
+              <button id="search-to-dir" class="chip-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>
+                Directions
+              </button>
+              <button id="search-copy-coords" class="chip-btn secondary">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+                Copy
+              </button>
+            </div>
+          </div>
+
+          <div class="help-hint" id="search-hint">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+            Click anywhere on the map to explore a location
+          </div>
+        </div>
+
+        <!-- Directions Panel -->
+        <div class="panel" id="panel-directions">
+          <div class="route-inputs">
+            <div class="waypoint-row">
+              <span class="dot dot-origin"></span>
+              <div class="input-row">
+                <input id="origin-input" type="text" placeholder="From — starting point" autocomplete="off" spellcheck="false" />
+                <button id="origin-locate" class="icon-btn sm" title="Use my location">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="7"/></svg>
+                </button>
+                <button id="origin-clear" class="clear-btn">✕</button>
+              </div>
+              <div id="origin-dropdown" class="dropdown"></div>
+            </div>
+
+            <div class="waypoint-line"></div>
+
+            <div class="waypoint-row">
+              <span class="dot dot-dest"></span>
+              <div class="input-row">
+                <input id="dest-input" type="text" placeholder="To — destination" autocomplete="off" spellcheck="false" />
+                <button id="dest-clear" class="clear-btn">✕</button>
+              </div>
+              <div id="dest-dropdown" class="dropdown"></div>
+            </div>
+          </div>
+
+          <!-- Transport mode selector -->
+          <div class="mode-selector" id="mode-selector">
+            <button class="mode-btn active" data-mode="driving" title="Car">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M5 17H3a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v9a2 2 0 0 1-2 2h-2"/>
+                <circle cx="7" cy="17" r="2"/><circle cx="17" cy="17" r="2"/>
+              </svg>
+              Car
+            </button>
+            <button class="mode-btn" data-mode="two_wheeler" title="Bike">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="5.5" cy="17.5" r="3.5"/><circle cx="18.5" cy="17.5" r="3.5"/>
+                <path d="M15 6h-3l-2 5.5M5.5 14l2.5-7h4l3 4.5h3"/>
+              </svg>
+              Bike
+            </button>
+            <button class="mode-btn" data-mode="auto" title="Auto">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M3 17V9l3-6h12l3 6v8"/><path d="M3 13h18"/>
+                <circle cx="7" cy="17" r="2"/><circle cx="17" cy="17" r="2"/>
+              </svg>
+              Auto
+            </button>
+            <button class="mode-btn" data-mode="walking" title="Walk">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="5" r="1"/>
+                <path d="m9 20 3-8 2 4h3M9 12l1-4 3 2h2"/>
+              </svg>
+              Walk
+            </button>
+            <button class="mode-btn" data-mode="cycling" title="Cycle">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="5" cy="17" r="3"/><circle cx="19" cy="17" r="3"/>
+                <path d="M12 17V8l-5 3m5-3 3-2M8 5h4"/>
+              </svg>
+              Cycle
+            </button>
+          </div>
+
+          <button id="get-directions-btn" class="primary-btn" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>
+            Get Directions
+          </button>
+
+          <div id="route-info" class="route-info">
+            <div class="route-stats">
+              <div class="stat">
+                <span class="stat-val" id="route-duration">—</span>
+                <span class="stat-lbl">Duration</span>
+              </div>
+              <div class="stat-sep"></div>
+              <div class="stat">
+                <span class="stat-val" id="route-distance">—</span>
+                <span class="stat-lbl">Distance</span>
+              </div>
+            </div>
+
+            <button id="start-ride-btn" class="start-ride-btn">
+              <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              Start Ride
+            </button>
+
+            <div class="steps-block" id="steps-block">
+              <button class="steps-toggle" id="steps-toggle">
+                Step-by-step directions
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+              </button>
+              <ol class="steps-list" id="steps-list"></ol>
+            </div>
+          </div>
+        </div>
+
+        <!-- Footer: API Key -->
+        <div class="sidebar-footer">
+          <label class="footer-label">Ola Maps API Key</label>
+          <div class="input-row">
+            <input id="api-key-input" type="password" placeholder="Paste your API key…" autocomplete="off" />
+            <button id="save-api-key" class="save-btn">Save</button>
+          </div>
+          <p class="footer-hint">Get your key at <span class="link-text">maps.olakrutrim.com</span></p>
+        </div>
+      </aside>
+
+      <!-- ── Sidebar toggle (mobile) ────────────────────────── -->
+      <button id="sidebar-toggle" class="sidebar-toggle" title="Menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="3" y1="6" x2="21" y2="6"/>
+          <line x1="3" y1="12" x2="21" y2="12"/>
+          <line x1="3" y1="18" x2="21" y2="18"/>
+        </svg>
+      </button>
+
+      <!-- ── Map ────────────────────────────────────────────── -->
+      <div id="map"></div>
+
+      <!-- ── Floating map controls ──────────────────────────── -->
+      <div class="map-controls">
+        <button class="map-btn" id="locate-btn" title="My Location">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="7"/>
+          </svg>
+        </button>
+        <div class="map-btn-sep"></div>
+        <button class="map-btn" id="theme-btn" title="Toggle Map Style">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/><path d="M2 12h20"/>
+          </svg>
+        </button>
+        <div class="map-btn-sep"></div>
+        <button class="map-btn" id="clear-map-btn" title="Clear Map">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- ── Navigation HUD ────────────────────────────────── -->
+      <div id="nav-hud" class="nav-hud">
+        <div class="nav-top">
+          <div class="nav-maneuver" id="nav-maneuver">
+            <svg id="nav-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M12 19V5M5 12l7-7 7 7"/>
+            </svg>
+          </div>
+          <div class="nav-instruction" id="nav-instruction">Getting ready…</div>
+          <div class="nav-dist-next" id="nav-dist-next"></div>
+        </div>
+        <div class="nav-bottom">
+          <div class="nav-meta">
+            <span id="nav-step-count"></span>
+            <span class="nav-dot">·</span>
+            <span id="nav-remaining-dist"></span>
+            <span class="nav-dot">·</span>
+            <span id="nav-remaining-time"></span>
+          </div>
+          <button id="end-ride-btn" class="end-ride-btn">
+            <svg viewBox="0 0 24 24" fill="currentColor"><rect width="10" height="10" x="7" y="7" rx="1"/></svg>
+            End Ride
+          </button>
+        </div>
+      </div>
+
+      <!-- ── Toast ──────────────────────────────────────────── -->
+      <div id="toast" class="toast" aria-live="polite"></div>
+
+    </div>
+  </body>
+</html>
