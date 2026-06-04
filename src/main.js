@@ -759,6 +759,24 @@ function startNavigation() {
 
   toast('Navigation started');
 
+  // Start WebSocket server and broadcast initial route to Pi display
+  const tauri = window.__TAURI__?.core;
+  if (tauri) {
+    tauri.invoke('start_ws_server').catch(() => {});
+    tauri.invoke('broadcast_nav', {
+      payload: JSON.stringify({
+        type: 'route_start',
+        origin: selectedOrigin,
+        destination: selectedDestination,
+        steps: navSteps.map(s => ({
+          instructions: s.instructions,
+          end_location: s.end_location,
+          distance: s.distance,
+        })),
+      }),
+    }).catch(() => {});
+  }
+
   navWatchId = navigator.geolocation.watchPosition(
     (pos) => {
       const { latitude: lat, longitude: lng, heading, speed } = pos.coords;
@@ -768,6 +786,22 @@ function startNavigation() {
         animateNavDot(navPrevPos.lng, navPrevPos.lat, lng, lat, NAV_CONFIG.easeMs);
       }
       navPrevPos = { lat, lng };
+
+      // Broadcast live position + nav state to Pi display
+      if (tauri) {
+        tauri.invoke('broadcast_nav', {
+          payload: JSON.stringify({
+            type: 'position',
+            lat, lng,
+            heading: heading ?? null,
+            speed: speed ?? null,
+            step_idx: navStepIdx,
+            step: navSteps[navStepIdx]?.instructions || '',
+            dist_next: document.getElementById('nav-dist-next')?.textContent || '',
+            arrived: navArrived,
+          }),
+        }).catch(() => {});
+      }
 
       // Camera: follow heading when moving (speed in m/s, > 0.3 ≈ walking pace)
       const bearing = NAV_CONFIG.trackHeading && heading != null && speed != null && speed > 0.3
