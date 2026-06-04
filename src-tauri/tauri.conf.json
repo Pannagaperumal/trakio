@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Ola Maps",
+  "productName": "trakio",
   "version": "1.0.0",
-  "identifier": "com.pannaga.olamaps",
+  "identifier": "com.pannaga.trakiomaps",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5173",
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Ola Maps",
+        "title": "trakio",
         "width": 1200,
         "height": 780,
         "minWidth": 640,

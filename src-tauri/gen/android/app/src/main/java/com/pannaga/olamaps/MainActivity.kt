@@ -1,4 +1,4 @@
-package com.pannaga.olamaps
+package com.pannaga.trakiomaps
 
 import android.os.Bundle
 import android.webkit.GeolocationPermissions

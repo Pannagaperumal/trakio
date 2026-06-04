@@ -106,7 +106,7 @@ async function fetchDirections(origin, dest) {
   try {
     const o = `${origin.lat},${origin.lng}`;
     const d = `${dest.lat},${dest.lng}`;
-    // Ola Maps routing API requires POST — GET returns 404
+    // trakio routing API requires POST — GET returns 404
     const r = await fetch(
       `${API}/routing/v1/directions?origin=${o}&destination=${d}&api_key=${apiKey}&mode=${transportMode}`,
       { method: 'POST' }
@@ -239,7 +239,7 @@ function closeDropdown(el) { el.classList.remove('open'); el.innerHTML = ''; }
 // ── Map init ──────────────────────────────────────────────
 async function initMap() {
   if (!apiKey) {
-    toast('Enter your Ola Maps API key below to get started');
+    toast('Enter your trakio API key below to get started');
     return;
   }
   if (map) return;
@@ -501,7 +501,7 @@ function setupDirections() {
     const leg = route.legs?.[0];
     if (!leg) { toast('Empty route returned by API'); return; }
 
-    // overview_polyline is a raw encoded string in Ola Maps API
+    // overview_polyline is a raw encoded string in trakio API
     const polylineStr = typeof route.overview_polyline === 'string'
       ? route.overview_polyline
       : (route.overview_polyline?.points ?? '');
@@ -511,7 +511,7 @@ function setupDirections() {
     drawRoute(coords);
     fitBounds(coords);
 
-    // Ola Maps returns readable_duration / readable_distance strings
+    // trakio returns readable_duration / readable_distance strings
     // and raw distance (meters) / duration (seconds) numbers
     const distKm = leg.readable_distance
       ? `${leg.readable_distance} km`
@@ -675,17 +675,17 @@ function formatDist(meters) {
 }
 
 const MANEUVER_ARROWS = {
-  'depart':           'M12 19V5M5 12l7-7 7 7',
-  'arrive':           'M12 5v14M5 12l7 7 7-7',
-  'turn-right':       'M5 12h14M13 5l7 7-7 7',
-  'turn-left':        'M19 12H5M11 5l-7 7 7 7',
-  'turn-slight-right':'M5 12h11M13 7l4 5-4 5',
+  'depart': 'M12 19V5M5 12l7-7 7 7',
+  'arrive': 'M12 5v14M5 12l7 7 7-7',
+  'turn-right': 'M5 12h14M13 5l7 7-7 7',
+  'turn-left': 'M19 12H5M11 5l-7 7 7 7',
+  'turn-slight-right': 'M5 12h11M13 7l4 5-4 5',
   'turn-slight-left': 'M19 12H8M11 7l-4 5 4 5',
   'turn-sharp-right': 'M5 12h8l4-7M9 5l8 7-8 7',
-  'turn-sharp-left':  'M19 12h-8l-4-7M15 5l-8 7 8 7',
-  'continue':         'M12 19V5M5 12l7-7 7 7',
-  'roundabout':       'M12 2a10 10 0 1 0 0 20M15 8l-3-3-3 3',
-  'uturn':            'M4 12h12a4 4 0 0 0 0-8H8',
+  'turn-sharp-left': 'M19 12h-8l-4-7M15 5l-8 7 8 7',
+  'continue': 'M12 19V5M5 12l7-7 7 7',
+  'roundabout': 'M12 2a10 10 0 1 0 0 20M15 8l-3-3-3 3',
+  'uturn': 'M4 12h12a4 4 0 0 0 0-8H8',
 };
 
 function setNavArrow(maneuver) {
@@ -762,7 +762,7 @@ function startNavigation() {
   // Start WebSocket server and broadcast initial route to Pi display
   const tauri = window.__TAURI__?.core;
   if (tauri) {
-    tauri.invoke('start_ws_server').catch(() => {});
+    tauri.invoke('start_ws_server').catch(() => { });
     tauri.invoke('broadcast_nav', {
       payload: JSON.stringify({
         type: 'route_start',
@@ -774,7 +774,7 @@ function startNavigation() {
           distance: s.distance,
         })),
       }),
-    }).catch(() => {});
+    }).catch(() => { });
   }
 
   navWatchId = navigator.geolocation.watchPosition(
@@ -800,7 +800,7 @@ function startNavigation() {
             dist_next: document.getElementById('nav-dist-next')?.textContent || '',
             arrived: navArrived,
           }),
-        }).catch(() => {});
+        }).catch(() => { });
       }
 
       // Camera: follow heading when moving (speed in m/s, > 0.3 ≈ walking pace)
