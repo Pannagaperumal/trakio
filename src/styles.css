@@ -500,6 +500,74 @@ input::placeholder { color: var(--text-3); }
 .footer-hint { font-size: 11px; color: var(--text-3); }
 .link-text { color: var(--accent-2); font-weight: 500; }
 
+/* ── Pi Display toggle ───────────────────────────────────── */
+.pi-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+.pi-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 0;
+}
+
+.pi-toggle-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pi-toggle-icon {
+  width: 15px; height: 15px;
+  color: var(--text-3);
+  flex-shrink: 0;
+}
+
+.pi-toggle-labels {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.pi-status {
+  font-size: 11px;
+  color: var(--text-3);
+  transition: color var(--dur);
+}
+.pi-status.streaming {
+  color: var(--green);
+}
+
+.toggle-switch {
+  position: relative;
+  width: 38px; height: 22px;
+  border-radius: 11px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background var(--dur), border-color var(--dur);
+  flex-shrink: 0;
+}
+.toggle-switch[aria-checked="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.toggle-thumb {
+  position: absolute;
+  top: 3px; left: 3px;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: var(--text-3);
+  transition: transform var(--dur) var(--ease), background var(--dur);
+}
+.toggle-switch[aria-checked="true"] .toggle-thumb {
+  transform: translateX(16px);
+  background: #fff;
+}
+
 /* ── Mode selector ───────────────────────────────────────── */
 .mode-selector {
   display: flex;

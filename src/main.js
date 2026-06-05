@@ -13,7 +13,12 @@ let selectedDest = null;
 let lastSearchResult = null;
 let toastTimer = null;
 
+// Pi Display streaming
+let piStreamingEnabled = false;
+let piMapMode = 'map'; // 'map' | 'svg'
+
 // Navigation state
+let navRouteCoords = []; // [lat,lng][] sent to Pi for road-following line
 let navSteps = [];
 let navStepIdx = 0;
 let navWatchId = null;
@@ -508,6 +513,7 @@ function setupDirections() {
     if (!polylineStr) { toast('No route geometry in response'); return; }
 
     const coords = decodePolyline(polylineStr);
+    navRouteCoords = coords.map(([lng, lat]) => [lat, lng]); // Leaflet [lat,lng]
     drawRoute(coords);
     fitBounds(coords);
 
@@ -759,19 +765,22 @@ function startNavigation() {
 
   toast('Navigation started');
 
-  // Start WebSocket server and broadcast initial route to Pi display
+  // Broadcast initial route to Pi display (only when Pi streaming is enabled)
   const tauri = window.__TAURI__?.core;
-  if (tauri) {
-    tauri.invoke('start_ws_server').catch(() => { });
+  if (tauri && piStreamingEnabled) {
     tauri.invoke('broadcast_nav', {
       payload: JSON.stringify({
         type: 'route_start',
+        display_mode: piMapMode,
         origin: selectedOrigin,
-        destination: selectedDestination,
+        destination: selectedDest,
+        routeCoords: navRouteCoords,
         steps: navSteps.map(s => ({
           instructions: s.instructions,
+          maneuver: s.maneuver || null,
           end_location: s.end_location,
           distance: s.distance,
+          duration: s.duration,
         })),
       }),
     }).catch(() => { });
@@ -788,10 +797,11 @@ function startNavigation() {
       navPrevPos = { lat, lng };
 
       // Broadcast live position + nav state to Pi display
-      if (tauri) {
+      if (tauri && piStreamingEnabled) {
         tauri.invoke('broadcast_nav', {
           payload: JSON.stringify({
             type: 'position',
+            display_mode: piMapMode,
             lat, lng,
             heading: heading ?? null,
             speed: speed ?? null,
@@ -942,6 +952,55 @@ function checkDirectionsReady() {
   document.getElementById('get-directions-btn').disabled = !(selectedOrigin && selectedDest);
 }
 
+// ── Pi Map Mode toggle ────────────────────────────
+function setupMapModeToggle() {
+  const btn    = document.getElementById('map-mode-toggle');
+  const status = document.getElementById('map-mode-status');
+  btn.setAttribute('aria-checked', 'true');
+
+  btn.addEventListener('click', () => {
+    piMapMode = piMapMode === 'map' ? 'svg' : 'map';
+    const isMap = piMapMode === 'map';
+    btn.setAttribute('aria-checked', String(isMap));
+    status.textContent = isMap ? 'Real Map' : 'Turn Diagrams';
+    status.classList.toggle('streaming', isMap);
+    toast(`Pi display: ${isMap ? 'real map' : 'turn diagrams'}`);
+  });
+}
+
+// ── Pi Display toggle ─────────────────────────────────────
+function setupPiToggle() {
+  const btn = document.getElementById('pi-toggle');
+  const status = document.getElementById('pi-status');
+
+  btn.addEventListener('click', async () => {
+    piStreamingEnabled = !piStreamingEnabled;
+    btn.setAttribute('aria-checked', String(piStreamingEnabled));
+
+    if (piStreamingEnabled) {
+      status.textContent = 'Streaming…';
+      status.classList.add('streaming');
+      const tauri = window.__TAURI__?.core;
+      if (tauri) {
+        try {
+          await tauri.invoke('start_ws_server');
+          status.textContent = 'Live on :9001';
+        } catch {
+          status.textContent = 'Server error';
+        }
+      } else {
+        // Dev mode — no Tauri, just mark enabled for testing
+        status.textContent = 'Enabled (dev)';
+      }
+      toast('Pi Display streaming on — connect the Pi to port 9001');
+    } else {
+      status.textContent = 'Off';
+      status.classList.remove('streaming');
+      toast('Pi Display streaming off');
+    }
+  });
+}
+
 // ── Inject spin keyframe ──────────────────────────────────
 const style = document.createElement('style');
 style.textContent = `@keyframes spin { to { transform: rotate(360deg); } }`;
@@ -956,4 +1015,6 @@ document.addEventListener('DOMContentLoaded', () => {
   setupDirections();
   setupModeSelector();
   setupMapControls();
+  setupPiToggle();
+  setupMapModeToggle();
 });
