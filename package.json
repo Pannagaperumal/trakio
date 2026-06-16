@@ -14,6 +14,7 @@
     "vite": "^8.0.16"
   },
   "dependencies": {
-    "olamaps-web-sdk": "^1.4.0"
+    "olamaps-web-sdk": "^1.4.0",
+    "ws": "^8.21.0"
   }
 }
