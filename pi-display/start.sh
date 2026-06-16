@@ -18,11 +18,18 @@ xset s off    2>/dev/null || true
 xset -dpms    2>/dev/null || true
 xset s noblank 2>/dev/null || true
 
+# Pick whichever Chromium binary exists (Bookworm = chromium, older = chromium-browser)
+CHROMIUM="$(command -v chromium-browser || command -v chromium)"
+if [ -z "$CHROMIUM" ]; then
+  echo "ERROR: no chromium binary found (tried chromium-browser, chromium)" >&2
+  exit 1
+fi
+
 # Kill any stale Chromium instances from a previous session
 pkill -f "chromium" 2>/dev/null || true
 sleep 1
 
-exec chromium-browser \
+exec "$CHROMIUM" \
   --kiosk \
   --noerrdialogs \
   --disable-infobars \

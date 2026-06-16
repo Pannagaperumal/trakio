@@ -26,10 +26,9 @@
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     }
 
-    /* ── Circular display ──────────────────────── */
+    /* ── Rectangular display ─────────────────────── */
     #display {
-      width: 100vmin; height: 100vmin;
-      border-radius: 50%;
+      width: 100vw; height: 100vh;
       background: var(--bg);
       position: relative;
       overflow: hidden;
@@ -47,17 +46,17 @@
 
     /* ── Connection dot + mode badge ────────────── */
     #conn-dot {
-      position: absolute; top: 18%; left: 18%;
-      width: 7px; height: 7px; border-radius: 50%;
+      position: absolute; top: 3.2vmin; left: 3.2vmin;
+      width: 9px; height: 9px; border-radius: 50%;
       background: var(--muted); z-index: 9999;
       transition: background .3s, box-shadow .3s;
     }
-    #conn-dot.live  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    #conn-dot.live  { background: var(--green); box-shadow: 0 0 8px var(--green); }
     #conn-dot.error { background: var(--red); }
 
-    /* tiny mode badge top-right within circle */
+    /* tiny mode badge top-right */
     #mode-badge {
-      position: absolute; top: 19%; right: 17%;
+      position: absolute; top: 3vmin; right: 3.2vmin;
       font-size: 2vmin; font-weight: 700; z-index: 9999;
       color: var(--muted); letter-spacing: .5px;
       opacity: 0; transition: opacity .3s;
@@ -65,12 +64,37 @@
     #mode-badge.visible { opacity: 1; }
 
     /* ══════════════════════════════════════════════
-       IDLE SCREEN
+       CLOCK / HOME SCREEN
     ══════════════════════════════════════════════ */
-    #idle-screen { gap: 8%; }
-    .idle-logo { font-size: 11vmin; font-weight: 800; letter-spacing: -.5vmin; color: var(--accent); }
-    .idle-sub  { font-size: 3.2vmin; color: var(--muted); text-align: center; line-height: 1.55; max-width: 62%; }
-    .idle-ip   { font-size: 3vmin; color: var(--accent); font-weight: 600; }
+    #clock-screen {
+      gap: 1.5vh;
+      background:
+        radial-gradient(120% 80% at 50% 0%, rgba(167,139,250,0.10), transparent 60%),
+        var(--bg);
+    }
+    .clock-brand {
+      position: absolute; top: 7vh;
+      font-size: 4.4vmin; font-weight: 800; letter-spacing: -.2vmin;
+      color: var(--accent);
+    }
+    .clock-time {
+      font-size: 24vmin; font-weight: 800; letter-spacing: -1.2vmin;
+      color: var(--text); line-height: .95;
+      font-variant-numeric: tabular-nums;
+      text-shadow: 0 0 9vmin rgba(167,139,250,0.22);
+      display: flex; align-items: baseline;
+    }
+    .clock-colon { color: var(--accent); animation: colonblink 2s steps(1, end) infinite; }
+    @keyframes colonblink { 50% { opacity: .25; } }
+    .clock-ampm { font-size: 6vmin; font-weight: 700; color: var(--muted); margin-left: 1.5vmin; letter-spacing: 0; }
+    .clock-date { font-size: 3.6vmin; color: var(--muted); font-weight: 500; letter-spacing: .25vmin; margin-top: 1vh; }
+    .clock-foot {
+      position: absolute; bottom: 6vh;
+      font-size: 2.4vmin; color: var(--muted); font-weight: 500;
+      display: flex; align-items: center; gap: 1.5vmin;
+    }
+    .clock-foot .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+    .clock-foot.ready .dot { background: var(--green); box-shadow: 0 0 6px var(--green); }
 
     /* ══════════════════════════════════════════════
        NAV SCREEN  — two layers, only one visible
@@ -144,7 +168,6 @@
     ══════════════════════════════════════════════ */
     #settings {
       position: absolute; inset: 0; z-index: 10000;
-      border-radius: 50%;
       background: rgba(11,13,18,0.94);
       display: flex; flex-direction: column;
       align-items: center; justify-content: center; gap: 4vmin;
@@ -167,11 +190,16 @@
   <div id="conn-dot"></div>
   <div id="mode-badge"></div>
 
-  <!-- ── IDLE ────────────────────────────────────── -->
-  <div id="idle-screen" class="screen active">
-    <div class="idle-logo">trakio</div>
-    <div class="idle-sub">Enable Pi Display in the app &amp; start navigation</div>
-    <div class="idle-ip" id="idle-ip">—</div>
+  <!-- ── CLOCK / HOME ────────────────────────────── -->
+  <div id="clock-screen" class="screen active">
+    <div class="clock-brand">trakio</div>
+    <div class="clock-time">
+      <span id="clk-h">--</span><span class="clock-colon">:</span><span id="clk-m">--</span><span class="clock-ampm" id="clk-ampm"></span>
+    </div>
+    <div class="clock-date" id="clk-date">—</div>
+    <div class="clock-foot" id="clk-foot">
+      <span class="dot"></span><span id="clk-status">Waiting for app…</span>
+    </div>
   </div>
 
   <!-- ── NAV ─────────────────────────────────────── -->

@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 use tokio::net::TcpListener;
 use tokio_tungstenite::accept_async;
-use futures_util::SinkExt;
+use futures_util::{SinkExt, StreamExt};
 
 struct WsServer {
     tx: Option<broadcast::Sender<String>>,
@@ -37,15 +37,35 @@ async fn start_ws_server(
             if let Ok((stream, _)) = listener.accept().await {
                 let mut rx = tx.subscribe();
                 tokio::spawn(async move {
+                    use tokio_tungstenite::tungstenite::Message;
                     if let Ok(ws) = accept_async(stream).await {
-                        let (mut write, _) = futures_util::StreamExt::split(ws);
-                        while let Ok(msg) = rx.recv().await {
-                            if write
-                                .send(tokio_tungstenite::tungstenite::Message::Text(msg.into()))
-                                .await
-                                .is_err()
-                            {
-                                break;
+                        let (mut write, mut read) = ws.split();
+                        loop {
+                            tokio::select! {
+                                // Outgoing: forward broadcast nav messages to this client
+                                msg = rx.recv() => {
+                                    match msg {
+                                        Ok(text) => {
+                                            if write.send(Message::Text(text.into())).await.is_err() {
+                                                break; // client gone
+                                            }
+                                        }
+                                        // Slow client fell behind — skip dropped msgs, keep connection
+                                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                                        // Sender dropped (server shutting down)
+                                        Err(broadcast::error::RecvError::Closed) => break,
+                                    }
+                                }
+                                // Incoming: drive the protocol (ping/pong handled by tungstenite),
+                                // and detect client close. Without this the socket isn't polled
+                                // and the connection dies.
+                                incoming = read.next() => {
+                                    match incoming {
+                                        Some(Ok(Message::Close(_))) | None => break,
+                                        Some(Err(_)) => break,
+                                        Some(Ok(_)) => {} // ignore client data/ping (auto-ponged)
+                                    }
+                                }
                             }
                         }
                     }

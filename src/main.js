@@ -887,6 +887,14 @@ function endNavigation() {
   if (markers.nav) { markers.nav.remove(); markers.nav = null; }
   map?.easeTo({ pitch: 0, bearing: 0, duration: 600 });
   toast('Navigation ended');
+
+  // Tell the Pi display the ride is over → it returns to the clock screen
+  const tauri = window.__TAURI__?.core;
+  if (tauri && piStreamingEnabled) {
+    tauri.invoke('broadcast_nav', {
+      payload: JSON.stringify({ type: 'route_end' }),
+    }).catch(() => { });
+  }
 }
 
 // ── Sidebar ───────────────────────────────────────────────
