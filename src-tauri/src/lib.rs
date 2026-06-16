@@ -61,6 +61,9 @@ async fn start_ws_server(
                                 // and the connection dies.
                                 incoming = read.next() => {
                                     match incoming {
+                                        Some(Ok(Message::Text(text))) => {
+                                            let _ = tx.send(text.to_string());
+                                        }
                                         Some(Ok(Message::Close(_))) | None => break,
                                         Some(Err(_)) => break,
                                         Some(Ok(_)) => {} // ignore client data/ping (auto-ponged)

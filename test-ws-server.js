@@ -2,6 +2,7 @@
 
 import { WebSocketServer, WebSocket } from 'ws';
 
+const HOST = '0.0.0.0';
 const PORT = 9001;
 const DISPLAY_URL = `file:///home/pannaga/Desktop/pro/trakio/pi-display/index.html?ws=ws://localhost:${PORT}`;
 const POINTS_PER_SEGMENT = 6;
@@ -64,9 +65,9 @@ let simulationRunning = false;
 let simulationInterval = null;
 let simulatedCallSent = false;
 
-const wss = new WebSocketServer({ port: PORT });
+const wss = new WebSocketServer({ host: HOST, port: PORT });
 
-console.log(`\ntrakio test WebSocket server running on ws://localhost:${PORT}`);
+console.log(`\ntrakio test WebSocket server running on ws://${HOST}:${PORT}`);
 console.log(`Open: ${DISPLAY_URL}\n`);
 console.log('Commands:');
 console.log('  [s] - Start simulation');

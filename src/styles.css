@@ -908,7 +908,131 @@ input::placeholder { color: var(--text-3); }
 
   #sidebar.open { transform: translateX(0); }
 
-  .sidebar-toggle { display: flex; }
-  .map-controls { bottom: 16px; right: 8px; }
-  .maplibregl-ctrl-bottom-right { bottom: 16px; right: 52px; }
+  .sidebar-toggle {
+    display: flex;
+    width: 48px;
+    height: 48px;
+    top: 14px;
+    left: 14px;
+    z-index: 40;
+  }
+  .sidebar-toggle svg { width: 20px; height: 20px; }
+  .sidebar-toggle.sidebar-open {
+    background: var(--bg-2);
+    border-color: var(--accent-border);
+  }
+
+  .tab {
+    min-height: 46px;
+    font-size: 13px;
+    padding: 10px 12px;
+  }
+
+  .input-row {
+    min-height: 48px;
+  }
+
+  .input-row input {
+    font-size: 16px;
+    padding-top: 12px;
+    padding-bottom: 12px;
+  }
+
+  .icon-btn,
+  .clear-btn {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .icon-btn svg,
+  .clear-btn svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .icon-btn.sm {
+    right: 40px;
+  }
+
+  .primary-btn,
+  .start-ride-btn,
+  .save-btn {
+    min-height: 48px;
+    font-size: 15px;
+  }
+
+  .primary-btn svg,
+  .start-ride-btn svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .mode-selector {
+    gap: 6px;
+    padding: 8px;
+  }
+
+  .mode-btn {
+    min-height: 58px;
+    padding: 9px 6px;
+    font-size: 11px;
+  }
+
+  .mode-btn svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .steps-toggle {
+    min-height: 48px;
+    font-size: 14px;
+  }
+
+  .toggle-switch {
+    width: 50px;
+    height: 30px;
+    border-radius: 15px;
+  }
+
+  .toggle-thumb {
+    top: 4px;
+    left: 4px;
+    width: 20px;
+    height: 20px;
+  }
+
+  .toggle-switch[aria-checked="true"] .toggle-thumb {
+    transform: translateX(20px);
+  }
+
+  .map-controls {
+    bottom: 16px;
+    right: 8px;
+  }
+
+  .map-btn {
+    width: 46px;
+    height: 46px;
+  }
+
+  .map-btn svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .maplibregl-ctrl-bottom-right { bottom: 16px; right: 62px; }
+
+  .nav-top {
+    padding: 18px 18px 14px;
+  }
+
+  .nav-bottom {
+    padding: 12px 18px 16px;
+  }
+
+  .end-ride-btn {
+    min-height: 42px;
+    padding: 10px 16px;
+    font-size: 13px;
+  }
 }

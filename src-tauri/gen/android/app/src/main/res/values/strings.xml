@@ -1,4 +1,7 @@
 <resources>
     <string name="app_name">trakio</string>
     <string name="main_activity_title">trakio</string>
+    <string name="tracking_notification_channel_name">trakio ride tracking</string>
+    <string name="tracking_notification_title">trakio navigation active</string>
+    <string name="tracking_notification_text">Keeping ride tracking and Pi display updates alive.</string>
 </resources>
