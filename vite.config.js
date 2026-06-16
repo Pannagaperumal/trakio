@@ -7,8 +7,8 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    port: 5174,
-    strictPort: false,
+    port: 5173,
+    strictPort: true,
     watch: { ignored: ['**/src-tauri/**'] },
     proxy: {
       // All /ola-api/* requests are forwarded to api.olamaps.io
