@@ -28,6 +28,9 @@ let navPrevPos = null;       // last known {lat, lng}
 let navAnimFrame = null;     // rAF handle for dot interpolation
 let navArrived = false;      // guard so arrival fires only once
 let navAdvancing = false;    // guard against double-advance on same GPS fix
+let piToggleBtn = null;
+let piStatusEl = null;
+let nativeBackgroundRideActive = false;
 
 
 // ── Constants ─────────────────────────────────────────────
@@ -59,6 +62,74 @@ function toast(msg, duration = 3000) {
   el.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), duration);
+}
+
+async function sendPiPayload(message) {
+  const tauri = window.__TAURI__?.core;
+  if (!tauri || !piStreamingEnabled) return;
+  try {
+    await tauri.invoke('start_ws_server');
+    await tauri.invoke('broadcast_nav', {
+      payload: JSON.stringify(message),
+    });
+  } catch {
+    // ignore transport errors so the app UI keeps working
+  }
+}
+
+window.__trakioIncomingCall = async (payload) => {
+  const caller = payload?.caller || payload?.name || payload?.number || 'Incoming call';
+  await sendPiPayload({
+    type: 'incoming_call',
+    caller,
+    number: payload?.number || '',
+    call_id: payload?.call_id || payload?.id || `${caller}:${Date.now()}`,
+  });
+};
+
+function getNativeRideBridge() {
+  return window.TrakioAndroidBridge || null;
+}
+
+function syncPiStreamingUI(textOverride) {
+  if (!piToggleBtn || !piStatusEl) return;
+  piToggleBtn.setAttribute('aria-checked', String(piStreamingEnabled));
+  if (piStreamingEnabled) {
+    piStatusEl.textContent = textOverride || (window.__TAURI__?.core ? 'Live on :9001' : 'Enabled (dev)');
+    piStatusEl.classList.add('streaming');
+  } else {
+    piStatusEl.textContent = textOverride || 'Off';
+    piStatusEl.classList.remove('streaming');
+  }
+}
+
+async function ensurePiStreaming(auto = false) {
+  piStreamingEnabled = true;
+  syncPiStreamingUI('Streaming…');
+
+  const tauri = window.__TAURI__?.core;
+  if (tauri) {
+    try {
+      await tauri.invoke('start_ws_server');
+      syncPiStreamingUI('Live on :9001');
+      if (!auto) {
+        toast('Pi Display streaming on — connect the Pi to port 9001');
+      }
+      return;
+    } catch {
+      piStreamingEnabled = false;
+      syncPiStreamingUI('Server error');
+      if (!auto) {
+        toast('Pi Display server error');
+      }
+      return;
+    }
+  }
+
+  syncPiStreamingUI('Enabled (dev)');
+  if (!auto) {
+    toast('Pi Display streaming on — connect the Pi to port 9001');
+  }
 }
 
 
@@ -765,25 +836,27 @@ function startNavigation() {
 
   toast('Navigation started');
 
-  // Broadcast initial route to Pi display (only when Pi streaming is enabled)
-  const tauri = window.__TAURI__?.core;
-  if (tauri && piStreamingEnabled) {
-    tauri.invoke('broadcast_nav', {
-      payload: JSON.stringify({
-        type: 'route_start',
-        display_mode: piMapMode,
-        origin: selectedOrigin,
-        destination: selectedDest,
-        routeCoords: navRouteCoords,
-        steps: navSteps.map(s => ({
-          instructions: s.instructions,
-          maneuver: s.maneuver || null,
-          end_location: s.end_location,
-          distance: s.distance,
-          duration: s.duration,
-        })),
-      }),
-    }).catch(() => { });
+  const routeStartPayload = {
+    type: 'route_start',
+    display_mode: piMapMode,
+    origin: selectedOrigin,
+    destination: selectedDest,
+    routeCoords: navRouteCoords,
+    steps: navSteps.map(s => ({
+      instructions: s.instructions,
+      maneuver: s.maneuver || null,
+      end_location: s.end_location,
+      distance: s.distance,
+      duration: s.duration,
+    })),
+  };
+
+  const nativeRideBridge = getNativeRideBridge();
+  nativeBackgroundRideActive = Boolean(nativeRideBridge && piStreamingEnabled);
+  if (nativeBackgroundRideActive) {
+    nativeRideBridge.startBackgroundRide(JSON.stringify(routeStartPayload));
+  } else {
+    sendPiPayload(routeStartPayload);
   }
 
   navWatchId = navigator.geolocation.watchPosition(
@@ -796,21 +869,19 @@ function startNavigation() {
       }
       navPrevPos = { lat, lng };
 
-      // Broadcast live position + nav state to Pi display
-      if (tauri && piStreamingEnabled) {
-        tauri.invoke('broadcast_nav', {
-          payload: JSON.stringify({
-            type: 'position',
-            display_mode: piMapMode,
-            lat, lng,
-            heading: heading ?? null,
-            speed: speed ?? null,
-            step_idx: navStepIdx,
-            step: navSteps[navStepIdx]?.instructions || '',
-            dist_next: document.getElementById('nav-dist-next')?.textContent || '',
-            arrived: navArrived,
-          }),
-        }).catch(() => { });
+      // Broadcast live position + nav state to Pi display when native background tracking is not active.
+      if (!nativeBackgroundRideActive) {
+        sendPiPayload({
+          type: 'position',
+          display_mode: piMapMode,
+          lat, lng,
+          heading: heading ?? null,
+          speed: speed ?? null,
+          step_idx: navStepIdx,
+          step: navSteps[navStepIdx]?.instructions || '',
+          dist_next: document.getElementById('nav-dist-next')?.textContent || '',
+          arrived: navArrived,
+        });
       }
 
       // Camera: follow heading when moving (speed in m/s, > 0.3 ≈ walking pace)
@@ -889,12 +960,13 @@ function endNavigation() {
   toast('Navigation ended');
 
   // Tell the Pi display the ride is over → it returns to the clock screen
-  const tauri = window.__TAURI__?.core;
-  if (tauri && piStreamingEnabled) {
-    tauri.invoke('broadcast_nav', {
-      payload: JSON.stringify({ type: 'route_end' }),
-    }).catch(() => { });
+  const nativeRideBridge = getNativeRideBridge();
+  if (nativeBackgroundRideActive && nativeRideBridge) {
+    nativeRideBridge.stopBackgroundRide();
+  } else {
+    sendPiPayload({ type: 'route_end' });
   }
+  nativeBackgroundRideActive = false;
 }
 
 // ── Sidebar ───────────────────────────────────────────────
@@ -907,27 +979,44 @@ function setupSidebar() {
 
   function openSidebar() {
     sidebar.classList.add('open');
-    toggle.classList.remove('show');
+    toggle.classList.add('show');
+    toggle.classList.add('sidebar-open');
+    toggle.setAttribute('aria-expanded', 'true');
   }
 
   function closeSidebar() {
     if (isMobile()) {
       sidebar.classList.remove('open');
       toggle.classList.add('show');
+      toggle.classList.remove('sidebar-open');
+      toggle.setAttribute('aria-expanded', 'false');
     }
   }
 
-  toggle.addEventListener('click', openSidebar);
+  function toggleSidebar() {
+    if (!isMobile()) return;
+    if (sidebar.classList.contains('open')) closeSidebar();
+    else openSidebar();
+  }
+
+  toggle.addEventListener('click', toggleSidebar);
   close.addEventListener('click', closeSidebar);
 
-  if (isMobile()) toggle.classList.add('show');
+  if (isMobile()) {
+    toggle.classList.add('show');
+    toggle.setAttribute('aria-expanded', 'false');
+  }
 
   window.addEventListener('resize', () => {
     if (!isMobile()) {
       sidebar.classList.remove('open');
       toggle.classList.remove('show');
+      toggle.classList.remove('sidebar-open');
+      toggle.setAttribute('aria-expanded', 'false');
     } else if (!sidebar.classList.contains('open')) {
       toggle.classList.add('show');
+      toggle.classList.remove('sidebar-open');
+      toggle.setAttribute('aria-expanded', 'false');
     }
   });
 }
@@ -978,34 +1067,20 @@ function setupMapModeToggle() {
 
 // ── Pi Display toggle ─────────────────────────────────────
 function setupPiToggle() {
-  const btn = document.getElementById('pi-toggle');
-  const status = document.getElementById('pi-status');
+  piToggleBtn = document.getElementById('pi-toggle');
+  piStatusEl = document.getElementById('pi-status');
 
-  btn.addEventListener('click', async () => {
-    piStreamingEnabled = !piStreamingEnabled;
-    btn.setAttribute('aria-checked', String(piStreamingEnabled));
+  syncPiStreamingUI();
 
-    if (piStreamingEnabled) {
-      status.textContent = 'Streaming…';
-      status.classList.add('streaming');
-      const tauri = window.__TAURI__?.core;
-      if (tauri) {
-        try {
-          await tauri.invoke('start_ws_server');
-          status.textContent = 'Live on :9001';
-        } catch {
-          status.textContent = 'Server error';
-        }
-      } else {
-        // Dev mode — no Tauri, just mark enabled for testing
-        status.textContent = 'Enabled (dev)';
-      }
-      toast('Pi Display streaming on — connect the Pi to port 9001');
-    } else {
-      status.textContent = 'Off';
-      status.classList.remove('streaming');
-      toast('Pi Display streaming off');
+  piToggleBtn.addEventListener('click', async () => {
+    if (!piStreamingEnabled) {
+      await ensurePiStreaming(false);
+      return;
     }
+
+    piStreamingEnabled = false;
+    syncPiStreamingUI('Off');
+    toast('Pi Display streaming off');
   });
 }
 
@@ -1025,4 +1100,5 @@ document.addEventListener('DOMContentLoaded', () => {
   setupMapControls();
   setupPiToggle();
   setupMapModeToggle();
+  ensurePiStreaming(true);
 });

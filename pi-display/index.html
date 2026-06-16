@@ -8,10 +8,13 @@
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --bg:     #0b0d12;
+      --bg:     #0a0e1a;
+      --bg-alt: #0f1419;
       --road:   #1b2236;
       --accent: #a78bfa;
+      --accent-light: #c4b5fd;
       --text:   #e6edf3;
+      --text-secondary: #8b949e;
       --muted:  #6e7a96;
       --green:  #3fb950;
       --red:    #f85149;
@@ -23,15 +26,18 @@
       display: flex; align-items: center; justify-content: center;
       overflow: hidden;
       user-select: none; -webkit-user-select: none;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
 
     /* ── Rectangular display ─────────────────────── */
     #display {
-      width: 100vw; height: 100vh;
-      background: var(--bg);
+      width: 100%; height: 100%;
+      background: linear-gradient(135deg, var(--bg) 0%, var(--bg-alt) 100%);
       position: relative;
       overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
 
     /* ── Screens ────────────────────────────────── */
@@ -63,38 +69,211 @@
     }
     #mode-badge.visible { opacity: 1; }
 
+    /* Minimal incoming call toast */
+    #call-toast {
+      position: absolute;
+      top: 3.8vmin;
+      left: 50%;
+      transform: translateX(-50%) translateY(-2vmin);
+      min-width: 46vmin;
+      max-width: 82vmin;
+      padding: 2.4vmin 3.4vmin;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 3vmin;
+      background: rgba(11,13,18,0.84);
+      backdrop-filter: blur(10px);
+      box-shadow: 0 14px 34px rgba(0,0,0,0.32);
+      display: flex;
+      align-items: center;
+      gap: 2.2vmin;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .22s ease, transform .22s ease;
+      z-index: 10001;
+    }
+    #call-toast.visible {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+    .call-toast-icon {
+      width: 6.4vmin;
+      height: 6.4vmin;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      background: rgba(63,185,80,0.18);
+      color: var(--green);
+    }
+    .call-toast-icon svg { width: 3.2vmin; height: 3.2vmin; }
+    .call-toast-copy { min-width: 0; }
+    .call-toast-label {
+      font-size: 2.25vmin;
+      color: var(--muted);
+      font-weight: 700;
+      letter-spacing: 0.12vmin;
+      text-transform: uppercase;
+    }
+    .call-toast-name {
+      font-size: 3.9vmin;
+      color: var(--text);
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
     /* ══════════════════════════════════════════════
-       CLOCK / HOME SCREEN
+       CLOCK / HOME SCREEN (ENHANCED)
     ══════════════════════════════════════════════ */
     #clock-screen {
-      gap: 1.5vh;
+      gap: 2.5vh;
       background:
-        radial-gradient(120% 80% at 50% 0%, rgba(167,139,250,0.10), transparent 60%),
+        radial-gradient(ellipse 120% 150% at 50% -10%, rgba(167,139,250,0.15), transparent 50%),
+        radial-gradient(ellipse 150% 80% at 100% 100%, rgba(63,185,144,0.08), transparent 60%),
         var(--bg);
+      position: relative;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
     }
+
+    /* Animated background orbs */
+    #clock-screen::before {
+      content: '';
+      position: absolute;
+      width: 45vmin;
+      height: 45vmin;
+      background: radial-gradient(circle, rgba(167,139,250,0.08) 0%, transparent 70%);
+      border-radius: 50%;
+      top: -15vmin;
+      left: -15vmin;
+      pointer-events: none;
+      opacity: 0.75;
+    }
+
+    #clock-screen::after {
+      content: '';
+      position: absolute;
+      width: 50vmin;
+      height: 50vmin;
+      background: radial-gradient(circle, rgba(63,185,144,0.06) 0%, transparent 70%);
+      border-radius: 50%;
+      bottom: -20vmin;
+      right: -20vmin;
+      pointer-events: none;
+      opacity: 0.7;
+    }
+
     .clock-brand {
-      position: absolute; top: 7vh;
-      font-size: 4.4vmin; font-weight: 800; letter-spacing: -.2vmin;
-      color: var(--accent);
+      position: relative;
+      z-index: 2;
+      font-size: 3vmin;
+      font-weight: 900;
+      letter-spacing: -0.1vmin;
+      background: linear-gradient(135deg, var(--accent) 0%, var(--accent-light) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      text-transform: uppercase;
+      margin-bottom: 1vh;
+      opacity: 0.95;
     }
+
     .clock-time {
-      font-size: 24vmin; font-weight: 800; letter-spacing: -1.2vmin;
-      color: var(--text); line-height: .95;
+      font-size: 22vmin;
+      font-weight: 950;
+      letter-spacing: -1vmin;
+      color: var(--text);
+      line-height: 0.95;
       font-variant-numeric: tabular-nums;
-      text-shadow: 0 0 9vmin rgba(167,139,250,0.22);
-      display: flex; align-items: baseline;
+      text-shadow: 0 2px 12px rgba(0,0,0,0.35);
+      display: flex;
+      align-items: baseline;
+      position: relative;
+      z-index: 2;
+      font-family: 'SF Mono', 'Monaco', 'Inconsolata', monospace;
     }
-    .clock-colon { color: var(--accent); animation: colonblink 2s steps(1, end) infinite; }
-    @keyframes colonblink { 50% { opacity: .25; } }
-    .clock-ampm { font-size: 6vmin; font-weight: 700; color: var(--muted); margin-left: 1.5vmin; letter-spacing: 0; }
-    .clock-date { font-size: 3.6vmin; color: var(--muted); font-weight: 500; letter-spacing: .25vmin; margin-top: 1vh; }
+
+    .clock-colon {
+      color: var(--accent);
+      animation: colonblink 2s steps(1, end) infinite;
+      margin: 0 -0.8vmin;
+    }
+
+    @keyframes colonblink {
+      0%, 49% { opacity: 1; }
+      50%, 100% { opacity: 0.15; }
+    }
+
+    .clock-ampm {
+      font-size: 5vmin;
+      font-weight: 700;
+      color: var(--text-secondary);
+      margin-left: 2vmin;
+      letter-spacing: 0.1vmin;
+      font-size: 4vmin;
+    }
+
+    .clock-date {
+      font-size: 2.8vmin;
+      color: var(--muted);
+      font-weight: 400;
+      letter-spacing: 0.15vmin;
+      margin-top: 1.5vh;
+      position: relative;
+      z-index: 2;
+      text-transform: uppercase;
+      opacity: 0.9;
+    }
+
     .clock-foot {
-      position: absolute; bottom: 6vh;
-      font-size: 2.4vmin; color: var(--muted); font-weight: 500;
-      display: flex; align-items: center; gap: 1.5vmin;
+      position: absolute;
+      bottom: 5vh;
+      font-size: 2vmin;
+      color: var(--text-secondary);
+      font-weight: 400;
+      display: flex;
+      align-items: center;
+      gap: 1.2vmin;
+      z-index: 2;
+      letter-spacing: 0.05vmin;
     }
-    .clock-foot .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
-    .clock-foot.ready .dot { background: var(--green); box-shadow: 0 0 6px var(--green); }
+
+    .clock-foot .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--text-secondary);
+      opacity: 0.6;
+      transition: all 0.3s ease;
+    }
+
+    .clock-foot.ready .dot {
+      background: var(--green);
+      box-shadow: 0 0 5px rgba(63,185,144,0.7);
+      opacity: 1;
+    }
+
+    .clock-foot.error .dot {
+      background: var(--red);
+      box-shadow: 0 0 4px rgba(248,81,73,0.6);
+    }
+
+    /* Accent bar under clock */
+    .clock-accent-bar {
+      position: absolute;
+      bottom: 9vh;
+      width: 8vmin;
+      height: 0.3vmin;
+      background: linear-gradient(90deg, transparent, var(--accent), transparent);
+      border-radius: 2px;
+      z-index: 2;
+    }
 
     /* ══════════════════════════════════════════════
        NAV SCREEN  — two layers, only one visible
@@ -129,9 +308,10 @@
     .hud-row { display: flex; align-items: center; gap: 3vmin; }
     .hud-arrow-wrap { width: 11vmin; height: 11vmin; flex-shrink: 0; color: var(--accent); }
     .hud-arrow-wrap svg { width: 100%; height: 100%; }
-    #map-dist  { font-size: 12vmin; font-weight: 900; color: var(--accent); letter-spacing: -.5vmin; line-height: 1; }
-    #map-label { font-size: 3.3vmin; color: var(--muted); margin-top: 1.5vmin; font-weight: 500;
-                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #map-dist  { font-size: 11.2vmin; font-weight: 900; color: var(--accent); letter-spacing: -.35vmin; line-height: .95;
+           text-shadow: 0 2px 10px rgba(0,0,0,0.28); }
+    #map-label { font-size: 3.7vmin; color: var(--text); margin-top: 1.6vmin; font-weight: 600; line-height: 1.12;
+           max-width: min(72vw, 70ch); text-wrap: balance; }
 
     /* ── SVG layer (fallback) ────────────────────── */
     #svg-layer {
@@ -144,16 +324,27 @@
     #svg-layer.active { opacity: 1; }
 
     #road-svg   { width: 62vmin; height: 62vmin; flex-shrink: 0; }
-    #svg-dist   { font-size: 13vmin; font-weight: 900; color: var(--accent); letter-spacing: -.5vmin; line-height: 1; margin-top: 3vmin; }
-    #svg-label  { font-size: 3.8vmin; color: var(--muted); margin-top: 1.5vmin; font-weight: 500;
-                  text-align: center; max-width: 72%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #svg-dist   { font-size: 12.2vmin; font-weight: 900; color: var(--accent); letter-spacing: -.35vmin; line-height: .95; margin-top: 3vmin;
+            text-shadow: 0 2px 10px rgba(0,0,0,0.28); }
+    #svg-label  { font-size: 4vmin; color: var(--text); margin-top: 1.8vmin; font-weight: 600; line-height: 1.14;
+            text-align: center; max-width: 74%; text-wrap: balance; }
 
     /* Position marker (shared) */
-    .pos-outer { width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; position: relative; }
-    .pos-ring  { position: absolute; inset: 0; border-radius: 50%; border: 2px solid rgba(167,139,250,0.4); animation: ripple 2s ease-out infinite; }
-    .pos-cone  { position: absolute; top: -5px; left: 50%; transform: translateX(-50%); width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-bottom: 9px solid var(--accent); filter: drop-shadow(0 0 2px rgba(167,139,250,.8)); }
-    .pos-dot   { width: 14px; height: 14px; border-radius: 50%; background: var(--accent); border: 2px solid #fff; box-shadow: 0 0 6px rgba(167,139,250,.6); position: relative; z-index: 1; }
-    @keyframes ripple { 0% { transform: scale(1); opacity: 1; } 100% { transform: scale(2.6); opacity: 0; } }
+    .pos-outer {
+      width: 38px; height: 38px;
+      display: flex; align-items: center; justify-content: center;
+      position: relative;
+      transform-origin: 50% 50%;
+    }
+    .pos-cat {
+      width: 100%; height: 100%;
+      display: block;
+      filter: drop-shadow(0 3px 8px rgba(0,0,0,0.35));
+    }
+    .pos-cat-badge { fill: rgba(167,139,250,0.18); stroke: rgba(255,255,255,0.24); stroke-width: 1.5; }
+    .pos-cat-face { fill: var(--accent); }
+    .pos-cat-detail { fill: #ffffff; }
+    .pos-cat-nose { fill: #0b0d12; opacity: 0.92; }
 
     /* ══════════════════════════════════════════════
        ARRIVED
@@ -189,6 +380,17 @@
 
   <div id="conn-dot"></div>
   <div id="mode-badge"></div>
+  <div id="call-toast" aria-live="polite" aria-atomic="true">
+    <div class="call-toast-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.86 19.86 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.86 19.86 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.9.33 1.78.64 2.62a2 2 0 0 1-.45 2.11L8.03 9.73a16 16 0 0 0 6.24 6.24l1.28-1.27a2 2 0 0 1 2.11-.45c.84.31 1.72.52 2.62.64A2 2 0 0 1 22 16.92z"></path>
+      </svg>
+    </div>
+    <div class="call-toast-copy">
+      <div class="call-toast-label">Incoming call</div>
+      <div class="call-toast-name" id="call-toast-name">Unknown caller</div>
+    </div>
+  </div>
 
   <!-- ── CLOCK / HOME ────────────────────────────── -->
   <div id="clock-screen" class="screen active">
@@ -248,7 +450,7 @@
   <div id="settings">
     <div class="set-label">WebSocket Host</div>
     <input class="set-input" id="settings-input" type="text"
-           placeholder="ws://192.168.43.1:9001" spellcheck="false" autocomplete="off">
+           placeholder="ws://localhost:9001" spellcheck="false" autocomplete="off">
     <button class="set-btn"    id="settings-connect">Connect</button>
     <button class="set-cancel" id="settings-cancel">Cancel</button>
   </div>
@@ -357,11 +559,13 @@ const DIAG = {
 };
 
 // ── Config ─────────────────────────────────────────
-const DEFAULT_WS      = 'ws://192.168.43.1:9001';
-const STORAGE_KEY     = 'trakio_ws';
+const DEFAULT_WS      = 'ws://localhost:9001';
 const RECONNECT_MS    = 3000;
 const TILE_TIMEOUT_MS = 1500; // fall back to SVG if tiles don't load
-const NAV_ZOOM        = 18;
+const NAV_ZOOM        = 17.5;
+const ARRIVAL_HOME_MS = 4000;
+const CALL_TOAST_MS   = 2400;
+const CALL_DEDUPE_MS  = 8000;
 
 // ── State ──────────────────────────────────────────
 let ws          = null;
@@ -374,6 +578,10 @@ let posMarker   = null;
 let routeLayer  = null;
 let casingLayer = null;
 let posHeading  = 0;
+let arrivalTimer = null;
+let callToastTimer = null;
+let lastCallSignature = '';
+let lastCallShownAt = 0;
 
 // Rendering mode: 'map' = Leaflet (preferred), 'svg' = fallback
 let renderMode      = 'map';
@@ -386,27 +594,40 @@ let camCur    = null;  // current interpolated camera centre
 let rafHandle = null;
 const CAM_ALPHA = 0.12; // lerp factor per frame (~60 fps → reaches target in ~0.5 s)
 const CAM_STOP  = 1e-6; // stop lerping when this close (degrees)
+const CAM_FRAME_MS = 48;
+let lastCamPaint = 0;
 
-function lerpCam() {
-  if (!camTarget || !camCur) return;
+function lerpCam(ts = 0) {
+  if (!camTarget || !camCur) {
+    rafHandle = null;
+    return;
+  }
   const dLat = camTarget.lat - camCur.lat;
   const dLng = camTarget.lng - camCur.lng;
   if (Math.abs(dLat) < CAM_STOP && Math.abs(dLng) < CAM_STOP) {
     camCur = { ...camTarget };
-    leafMap.setView([camCur.lat, camCur.lng], NAV_ZOOM, { animate: false });
+    if (ts - lastCamPaint >= CAM_FRAME_MS) {
+      leafMap.setView([camCur.lat, camCur.lng], NAV_ZOOM, { animate: false });
+      lastCamPaint = ts;
+    }
+    rafHandle = null;
     return; // done — don't schedule next frame
   }
   camCur.lat += dLat * CAM_ALPHA;
   camCur.lng += dLng * CAM_ALPHA;
-  leafMap.setView([camCur.lat, camCur.lng], NAV_ZOOM, { animate: false });
+  if (ts - lastCamPaint >= CAM_FRAME_MS) {
+    leafMap.setView([camCur.lat, camCur.lng], NAV_ZOOM, { animate: false });
+    lastCamPaint = ts;
+  }
   rafHandle = requestAnimationFrame(lerpCam);
 }
 
 function setCamTarget(lat, lng) {
   camTarget = { lat, lng };
   if (!camCur) camCur = { lat, lng };
-  cancelAnimationFrame(rafHandle);
-  rafHandle = requestAnimationFrame(lerpCam);
+  if (!rafHandle) {
+    rafHandle = requestAnimationFrame(lerpCam);
+  }
 }
 
 // ── Leaflet map ────────────────────────────────────
@@ -471,15 +692,22 @@ function applyMode(mode, forced) {
 function createPosMarker(lat, lng, hdg) {
   const icon = L.divIcon({
     className: '',
-    iconSize: [34, 34], iconAnchor: [17, 17],
+    iconSize: [38, 38], iconAnchor: [19, 19],
     html: `<div class="pos-outer">
-             <div class="pos-ring"></div>
-             <div class="pos-cone"></div>
-             <div class="pos-dot"></div>
+             <svg class="pos-cat" viewBox="0 0 38 38" aria-hidden="true">
+               <circle class="pos-cat-badge" cx="19" cy="19" r="17"></circle>
+               <path class="pos-cat-face" d="M19 6l4.1 4.4 5.4-1.2-1.6 5.1c2.4 2.4 3.6 5.1 3.6 7.9 0 6.3-5.2 10.8-11.5 10.8S7.5 28.5 7.5 22.2c0-2.8 1.2-5.5 3.6-7.9L9.5 9.2l5.4 1.2L19 6z"></path>
+               <circle class="pos-cat-detail" cx="14.5" cy="21" r="1.6"></circle>
+               <circle class="pos-cat-detail" cx="23.5" cy="21" r="1.6"></circle>
+               <path class="pos-cat-nose" d="M19 23.4l2.1 2.1h-4.2L19 23.4z"></path>
+               <path class="pos-cat-detail" d="M14.1 27.2c1.1 1.1 2.8 1.7 4.9 1.7s3.8-.6 4.9-1.7l-1.2-1.1c-.8.8-2.1 1.2-3.7 1.2s-2.9-.4-3.7-1.2l-1.2 1.1z"></path>
+             </svg>
            </div>`,
   });
   posMarker = L.marker([lat, lng], { icon, zIndexOffset: 1000 }).addTo(leafMap);
   posHeading = hdg ?? 0;
+  const outer = posMarker.getElement()?.querySelector('.pos-outer');
+  if (outer) outer.style.transform = `rotate(${posHeading}deg)`;
 }
 
 function updatePosMarker(lat, lng, hdg) {
@@ -560,13 +788,57 @@ function setConnDot(state) {
   document.getElementById('conn-dot').className =
     state === 'live' ? 'live' : state === 'error' ? 'error' : '';
 }
+function setClockStatus(text, state = '') {
+  const foot = document.getElementById('clk-foot');
+  foot.classList.remove('ready', 'error');
+  if (state) foot.classList.add(state);
+  document.getElementById('clk-status').textContent = text;
+}
 function fmt(m) {
   if (m == null) return '—';
   return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`;
 }
 
+function clearArrivalTimer() {
+  clearTimeout(arrivalTimer);
+  arrivalTimer = null;
+}
+
+function showCallToast(callerName) {
+  const toast = document.getElementById('call-toast');
+  document.getElementById('call-toast-name').textContent = callerName || 'Unknown caller';
+  clearTimeout(callToastTimer);
+  toast.classList.add('visible');
+  callToastTimer = setTimeout(() => {
+    toast.classList.remove('visible');
+  }, CALL_TOAST_MS);
+}
+
+function shouldShowIncomingCall(msg) {
+  const signature = String(msg.call_id || msg.id || msg.caller || msg.name || 'unknown');
+  const now = Date.now();
+  if (signature === lastCallSignature && now - lastCallShownAt < CALL_DEDUPE_MS) {
+    return false;
+  }
+  lastCallSignature = signature;
+  lastCallShownAt = now;
+  return true;
+}
+
+function returnToHome() {
+  navigating = false;
+  clearArrivalTimer();
+  show('clock-screen');
+}
+
 // ── WS message handler ─────────────────────────────
 function handleMsg(msg) {
+  if (msg.type === 'incoming_call') {
+    if (shouldShowIncomingCall(msg)) {
+      showCallToast(msg.caller || msg.name);
+    }
+    return;
+  }
 
   // App may override render mode at any time
   if (msg.display_mode && msg.display_mode !== renderMode) {
@@ -576,6 +848,7 @@ function handleMsg(msg) {
   }
 
   if (msg.type === 'route_start') {
+    clearArrivalTimer();
     routeSteps = msg.steps || [];
     destName   = msg.destination?.name || '';
     navigating = true;
@@ -610,7 +883,12 @@ function handleMsg(msg) {
 
   if (msg.type === 'position') {
     if (!navigating) return;
-    if (msg.arrived) { show('arrived-screen'); return; }
+    if (msg.arrived) {
+      show('arrived-screen');
+      clearArrivalTimer();
+      arrivalTimer = setTimeout(returnToHome, ARRIVAL_HOME_MS);
+      return;
+    }
 
     const { lat, lng, heading, step_idx, step, dist_next } = msg;
     const idx  = step_idx ?? 0;
@@ -636,24 +914,35 @@ function connect(url) {
   if (ws) { ws.onclose = null; ws.close(); ws = null; }
   clearTimeout(reconnTimer);
 
-  wsUrl = url
-    || new URLSearchParams(location.search).get('ws')
-    || localStorage.getItem(STORAGE_KEY)
-    || DEFAULT_WS;
+  wsUrl = url || wsUrl;
 
-  localStorage.setItem(STORAGE_KEY, wsUrl);
-  document.getElementById('idle-ip').textContent   = wsUrl;
+  if (!wsUrl) {
+    setConnDot('');
+    setClockStatus('Set WebSocket host to start', '');
+    return;
+  }
+
   document.getElementById('settings-input').value  = wsUrl;
   setConnDot('');
+  setClockStatus('Connecting…', '');
 
   ws = new WebSocket(wsUrl);
-  ws.onopen    = () => setConnDot('live');
+  ws.onopen    = () => {
+    setConnDot('live');
+    setClockStatus('Connected', 'ready');
+  };
   ws.onmessage = e => { try { handleMsg(JSON.parse(e.data)); } catch {} };
   ws.onerror   = () => ws.close();
   ws.onclose   = () => {
     setConnDot('error');
+    setClockStatus(`Disconnected from ${wsUrl}`, 'error');
     reconnTimer = setTimeout(() => connect(wsUrl), RECONNECT_MS);
   };
+}
+
+function getStartupWsUrl() {
+  return new URLSearchParams(location.search).get('ws')
+    || DEFAULT_WS;
 }
 
 // ── Settings (long-press 1.5 s) ────────────────────
@@ -673,7 +962,32 @@ document.getElementById('settings-cancel').addEventListener('click', () => {
   settingsEl.classList.remove('open');
 });
 
-connect();
+wsUrl = getStartupWsUrl();
+document.getElementById('settings-input').value = wsUrl;
+connect(wsUrl);
+
+// ── Clock update ───────────────────────────────────
+function updateClock() {
+  const now = new Date();
+  const h = String(now.getHours()).padStart(2, '0');
+  const m = String(now.getMinutes()).padStart(2, '0');
+  const ampm = now.getHours() >= 12 ? 'PM' : 'AM';
+  
+  const dateFormatter = new Intl.DateTimeFormat('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric'
+  });
+  const dateStr = dateFormatter.format(now);
+
+  document.getElementById('clk-h').textContent = h;
+  document.getElementById('clk-m').textContent = m;
+  document.getElementById('clk-ampm').textContent = ampm;
+  document.getElementById('clk-date').textContent = dateStr;
+}
+
+updateClock();
+setInterval(updateClock, 1000);
 </script>
 </body>
 </html>

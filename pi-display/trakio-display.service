@@ -6,7 +6,7 @@
 #   sudo systemctl start  trakio-display
 #
 # To pass a fixed WS URL instead of using the on-screen form:
-#   ExecStart=/home/pi/trakio-display/start.sh ws://192.168.43.1:9001
+#   ExecStart=/home/pi/trakio-display/start.sh ws://localhost:9001
 
 [Unit]
 Description=trakio Pi Kiosk Display

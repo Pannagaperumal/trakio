@@ -20,7 +20,7 @@ if [ -z "$WS_URL" ]; then
   LSDB=$(find "$HOME/.config/chromium" -name "*.localstorage" 2>/dev/null | head -1)
   WS_URL=$(strings "$LSDB" 2>/dev/null | grep -oE 'ws://[0-9.]+:[0-9]+' | head -1)
 fi
-WS_URL="${WS_URL:-ws://192.168.43.1:9001}"
+WS_URL="${WS_URL:-ws://localhost:9001}"
 
 HOSTPORT="${WS_URL#ws://}"          # strip scheme
 HOST="${HOSTPORT%%:*}"
