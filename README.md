@@ -72,6 +72,27 @@ If you need an API key, obtain one from the Ola Maps service or your app provide
 - The app uses a proxy during development to avoid CORS issues.
 - In production, Tauri bundles the app as a native desktop application.
 
+## Pi Wi-Fi Provisioning Flow
+
+trakio now includes a one-time Pi Wi-Fi provisioning flow that skips Bluetooth discovery in the app:
+
+1. On the Pi, run `pi-display/start-pairing.sh` to show the controller MAC as a QR.
+2. Start `pi-display/ble_wifi.sh` on the Pi so RFCOMM channel 1 is ready to receive credentials.
+3. In the Tauri app, open the Directions tab, scan or upload the Pi QR, then send `SSID_password` from the new Pi Bluetooth Pairing card.
+4. The Pi script reads the payload, saves the Wi-Fi profile through `nmcli`, and later reconnects on that saved Wi-Fi without Bluetooth.
+
+### Pi prerequisites
+
+- `bluez`
+- `network-manager`
+- `qrencode` for local QR rendering
+
+### Linux app host prerequisites
+
+- `bluetoothctl`
+- `rfcomm`
+- Rust/Tauri system packages, including `pkg-config` and `libdbus-1-dev` when building on Linux
+
 ## License
 
 This project is currently unlicensed.

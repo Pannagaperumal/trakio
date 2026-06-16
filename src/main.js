@@ -1,4 +1,5 @@
 import { OlaMaps } from 'olamaps-web-sdk';
+import jsQR from 'jsqr';
 
 // ── State ────────────────────────────────────────────────
 let map = null;
@@ -31,6 +32,8 @@ let navAdvancing = false;    // guard against double-advance on same GPS fix
 let piToggleBtn = null;
 let piStatusEl = null;
 let nativeBackgroundRideActive = false;
+let pairingScanFrame = null;
+let pairingStream = null;
 
 
 // ── Constants ─────────────────────────────────────────────
@@ -62,6 +65,117 @@ function toast(msg, duration = 3000) {
   el.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), duration);
+}
+
+function setPairingStatus(message, tone = '') {
+  const el = document.getElementById('pairing-status');
+  if (!el) return;
+  el.textContent = message;
+  el.classList.remove('success', 'error');
+  if (tone) el.classList.add(tone);
+}
+
+function normalizeBluetoothMac(rawValue) {
+  const compact = String(rawValue || '').trim().replace(/[^0-9a-fA-F]/g, '').toUpperCase();
+  if (compact.length !== 12) return null;
+  return compact.match(/.{1,2}/g)?.join(':') || null;
+}
+
+function extractBluetoothMac(rawValue) {
+  const direct = normalizeBluetoothMac(rawValue);
+  if (direct) return direct;
+
+  const match = String(rawValue || '').match(/([0-9A-Fa-f]{2}([:\-]?)){5}[0-9A-Fa-f]{2}/);
+  return match ? normalizeBluetoothMac(match[0]) : null;
+}
+
+function applyDetectedPiMac(rawValue, source) {
+  const mac = extractBluetoothMac(rawValue);
+  if (!mac) {
+    setPairingStatus(`QR decoded, but no Bluetooth MAC found in ${source}.`, 'error');
+    return false;
+  }
+
+  document.getElementById('pi-mac-input').value = mac;
+  setPairingStatus(`Pi MAC captured from ${source}: ${mac}`, 'success');
+  toast(`Pi MAC ready: ${mac}`);
+  return true;
+}
+
+function stopPairingScanner() {
+  if (pairingScanFrame) {
+    cancelAnimationFrame(pairingScanFrame);
+    pairingScanFrame = null;
+  }
+
+  if (pairingStream) {
+    pairingStream.getTracks().forEach((track) => track.stop());
+    pairingStream = null;
+  }
+
+  const scanner = document.getElementById('pairing-scanner');
+  const video = document.getElementById('pairing-video');
+  if (scanner) scanner.hidden = true;
+  if (video) {
+    video.pause();
+    video.srcObject = null;
+  }
+}
+
+function scanPairingVideoFrame() {
+  const video = document.getElementById('pairing-video');
+  const canvas = document.getElementById('pairing-canvas');
+  if (!video || !canvas || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+    pairingScanFrame = requestAnimationFrame(scanPairingVideoFrame);
+    return;
+  }
+
+  const width = video.videoWidth;
+  const height = video.videoHeight;
+  if (!width || !height) {
+    pairingScanFrame = requestAnimationFrame(scanPairingVideoFrame);
+    return;
+  }
+
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) {
+    setPairingStatus('Camera scan unavailable in this browser.', 'error');
+    stopPairingScanner();
+    return;
+  }
+
+  ctx.drawImage(video, 0, 0, width, height);
+  const image = ctx.getImageData(0, 0, width, height);
+  const code = jsQR(image.data, width, height, { inversionAttempts: 'attemptBoth' });
+  if (code?.data && applyDetectedPiMac(code.data, 'camera')) {
+    stopPairingScanner();
+    return;
+  }
+
+  pairingScanFrame = requestAnimationFrame(scanPairingVideoFrame);
+}
+
+async function decodePairQrFile(file) {
+  const bitmap = await createImageBitmap(file);
+  const canvas = document.getElementById('pairing-canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) throw new Error('Canvas not available');
+
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  ctx.drawImage(bitmap, 0, 0);
+  const image = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+  const code = jsQR(image.data, bitmap.width, bitmap.height, { inversionAttempts: 'attemptBoth' });
+
+  if (!code?.data) {
+    throw new Error('No QR code detected in the selected image');
+  }
+
+  if (!applyDetectedPiMac(code.data, 'image upload')) {
+    throw new Error('QR did not contain a Bluetooth MAC address');
+  }
 }
 
 async function sendPiPayload(message) {
@@ -719,6 +833,109 @@ function setupModeSelector() {
   });
 }
 
+function setupPiPairing() {
+  const scanBtn = document.getElementById('pair-pi-scan-btn');
+  const stopBtn = document.getElementById('pair-pi-stop-scan-btn');
+  const fileInput = document.getElementById('pair-qr-file-input');
+  const sendBtn = document.getElementById('pair-pi-send-btn');
+  const scanner = document.getElementById('pairing-scanner');
+  const video = document.getElementById('pairing-video');
+  const macInput = document.getElementById('pi-mac-input');
+
+  macInput.addEventListener('blur', () => {
+    const normalized = normalizeBluetoothMac(macInput.value);
+    if (normalized) macInput.value = normalized;
+  });
+
+  scanBtn.addEventListener('click', async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setPairingStatus('Camera scanning is not available here. Upload a QR image instead.', 'error');
+      return;
+    }
+
+    try {
+      pairingStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' },
+        audio: false,
+      });
+      video.srcObject = pairingStream;
+      await video.play();
+      scanner.hidden = false;
+      setPairingStatus('Scanning QR from camera…');
+      pairingScanFrame = requestAnimationFrame(scanPairingVideoFrame);
+    } catch (error) {
+      console.error('[pairing-scan]', error);
+      setPairingStatus('Camera access failed. Check permissions or upload an image.', 'error');
+      stopPairingScanner();
+    }
+  });
+
+  stopBtn.addEventListener('click', () => {
+    stopPairingScanner();
+    setPairingStatus('Scanner stopped. You can scan again or paste the MAC manually.');
+  });
+
+  fileInput.addEventListener('change', async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      await decodePairQrFile(file);
+    } catch (error) {
+      console.error('[pairing-file]', error);
+      setPairingStatus(error.message || 'Could not read QR image.', 'error');
+    } finally {
+      fileInput.value = '';
+    }
+  });
+
+  sendBtn.addEventListener('click', async () => {
+    const ssid = document.getElementById('pi-ssid-input').value.trim();
+    const password = document.getElementById('pi-password-input').value;
+    const mac = normalizeBluetoothMac(macInput.value);
+
+    if (!ssid) {
+      setPairingStatus('Enter the Wi-Fi SSID you want to push to the Pi.', 'error');
+      return;
+    }
+    if (!password) {
+      setPairingStatus('Enter the Wi-Fi password before sending.', 'error');
+      return;
+    }
+    if (!mac) {
+      setPairingStatus('Scan or enter a valid Pi Bluetooth MAC address first.', 'error');
+      return;
+    }
+
+    const tauri = window.__TAURI__?.core;
+    if (!tauri) {
+      setPairingStatus('Bluetooth pairing is only available in the Tauri app.', 'error');
+      return;
+    }
+
+    sendBtn.disabled = true;
+    setPairingStatus(`Connecting to ${mac} over RFCOMM…`);
+
+    try {
+      const response = await tauri.invoke('send_pi_wifi_credentials', {
+        macAddress: mac,
+        ssid,
+        password,
+      });
+      setPairingStatus(response, 'success');
+      toast('Wi-Fi credentials sent to Pi');
+    } catch (error) {
+      console.error('[pairing-send]', error);
+      setPairingStatus(String(error), 'error');
+      toast('Pi pairing failed');
+    } finally {
+      sendBtn.disabled = false;
+    }
+  });
+
+  window.addEventListener('beforeunload', stopPairingScanner);
+}
+
 // ── Navigation helpers ────────────────────────────────────
 function haversine(lat1, lng1, lat2, lng2) {
   const R = 6371000;
@@ -1100,5 +1317,6 @@ document.addEventListener('DOMContentLoaded', () => {
   setupMapControls();
   setupPiToggle();
   setupMapModeToggle();
+  setupPiPairing();
   ensurePiStreaming(true);
 });

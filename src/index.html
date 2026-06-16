@@ -168,6 +168,62 @@
               <ol class="steps-list" id="steps-list"></ol>
             </div>
           </div>
+
+          <section class="pairing-card" id="pairing-card">
+            <div class="pairing-head">
+              <div>
+                <p class="pairing-eyebrow">Pi Wi-Fi Provisioning</p>
+                <h3>Use Bluetooth once to push Wi-Fi credentials, then let the Pi reconnect on saved Wi-Fi.</h3>
+              </div>
+              <span class="pairing-badge">Channel 1</span>
+            </div>
+
+            <div class="pairing-grid">
+              <label class="pairing-field">
+                <span>Wi-Fi SSID</span>
+                <input id="pi-ssid-input" type="text" placeholder="FactoryFloor-5G" autocomplete="off" spellcheck="false" />
+              </label>
+              <label class="pairing-field">
+                <span>Wi-Fi Password</span>
+                <input id="pi-password-input" type="password" placeholder="Enter Pi Wi-Fi password" autocomplete="off" spellcheck="false" />
+              </label>
+            </div>
+
+            <div class="pairing-grid single">
+              <label class="pairing-field">
+                <span>Pi Bluetooth MAC</span>
+                <input id="pi-mac-input" type="text" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off" spellcheck="false" />
+              </label>
+            </div>
+
+            <div class="pairing-actions">
+              <button id="pair-pi-scan-btn" class="chip-btn" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7V4h3M17 4h3v3M20 17v3h-3M7 20H4v-3"/><path d="M8 8h8v8H8z"/></svg>
+                Scan QR
+              </button>
+              <label class="chip-btn secondary pairing-file-btn" for="pair-qr-file-input">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+                Upload QR
+              </label>
+              <input id="pair-qr-file-input" type="file" accept="image/*" hidden />
+              <button id="pair-pi-send-btn" class="primary-btn" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 7h10v10H7z"/><path d="M3 12h4m10 0h4"/></svg>
+                Send To Pi
+              </button>
+            </div>
+
+            <p class="pairing-hint" id="pairing-hint">Use the live camera or upload a QR photo. The app sends <strong>SSID_password</strong> to RFCOMM channel 1 once, and the Pi uses that saved network afterward.</p>
+            <p class="pairing-status" id="pairing-status">Waiting for Pi MAC</p>
+
+            <div class="pairing-scanner" id="pairing-scanner" hidden>
+              <video id="pairing-video" playsinline muted></video>
+              <canvas id="pairing-canvas" hidden></canvas>
+              <div class="pairing-scanner-copy">
+                <span>Point the camera at the Pi QR label.</span>
+                <button id="pair-pi-stop-scan-btn" class="chip-btn secondary" type="button">Stop</button>
+              </div>
+            </div>
+          </section>
         </div>
 
         <!-- Footer: Pi Display toggle + API Key -->
