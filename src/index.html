@@ -168,45 +168,11 @@
               <ol class="steps-list" id="steps-list"></ol>
             </div>
           </div>
+
         </div>
 
-        <!-- Footer: Pi Display toggle + API Key -->
+        <!-- Footer: API Key -->
         <div class="sidebar-footer">
-          <!-- Pi Display streaming toggle -->
-          <div class="pi-toggle-row">
-            <div class="pi-toggle-left">
-              <svg class="pi-toggle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="2" y="3" width="20" height="14" rx="2"/>
-                <path d="M8 21h8M12 17v4"/>
-              </svg>
-              <div class="pi-toggle-labels">
-                <span class="footer-label" style="margin:0">Pi Display</span>
-                <span class="pi-status" id="pi-status">Off</span>
-              </div>
-            </div>
-            <button class="toggle-switch" id="pi-toggle" role="switch" aria-checked="false" title="Stream navigation to Pi Display">
-              <span class="toggle-thumb"></span>
-            </button>
-          </div>
-
-          <!-- Map mode selector -->
-          <div class="pi-toggle-row">
-            <div class="pi-toggle-left">
-              <svg class="pi-toggle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"/>
-                <line x1="9" y1="3" x2="9" y2="18"/><line x1="15" y1="6" x2="15" y2="21"/>
-              </svg>
-              <div class="pi-toggle-labels">
-                <span class="footer-label" style="margin:0">Pi Map Mode</span>
-                <span class="pi-status streaming" id="map-mode-status">Real Map</span>
-              </div>
-            </div>
-            <button class="toggle-switch" id="map-mode-toggle" role="switch" aria-checked="true" title="Real map vs turn diagrams on Pi">
-              <span class="toggle-thumb"></span>
-            </button>
-          </div>
-
-          <div class="pi-divider"></div>
           <label class="footer-label">trakio API Key</label>
           <div class="input-row">
             <input id="api-key-input" type="password" placeholder="Paste your API key…" autocomplete="off" />

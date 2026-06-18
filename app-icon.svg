@@ -1,0 +1,30 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7c6fee"/>
+      <stop offset="1" stop-color="#6457d6"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#000000" flood-opacity="0.22"/>
+    </filter>
+  </defs>
+
+  <!-- Rounded-square app background -->
+  <rect x="0" y="0" width="1024" height="1024" rx="220" ry="220" fill="url(#bg)"/>
+
+  <!-- White location pin with a cut-out circle (evenodd reveals the background) -->
+  <path fill="#ffffff" fill-rule="evenodd" filter="url(#shadow)" d="
+      M512 196
+      C374 196 262 308 262 446
+      C262 626 512 856 512 856
+      C512 856 762 626 762 446
+      C762 308 650 196 512 196
+      Z
+      M512 362
+      C558 362 596 400 596 446
+      C596 492 558 530 512 530
+      C466 530 428 492 428 446
+      C428 400 466 362 512 362
+      Z
+  "/>
+</svg>

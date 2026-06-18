@@ -476,6 +476,129 @@ input::placeholder { color: var(--text-3); }
 
 .step-text { font-size: 12px; color: var(--text-2); line-height: 1.5; }
 
+/* ── Pi pairing ─────────────────────────────────────────── */
+.pairing-card {
+  background: linear-gradient(180deg, rgba(124,111,238,0.1), rgba(17,20,29,0.96));
+  border: 1px solid rgba(124,111,238,0.22);
+  border-radius: var(--r-xl);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: var(--shadow-sm);
+}
+
+.pairing-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pairing-eyebrow {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent-2);
+  margin-bottom: 4px;
+}
+
+.pairing-head h3 {
+  font-size: 13px;
+  line-height: 1.45;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.pairing-badge {
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.05);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 9px;
+  white-space: nowrap;
+}
+
+.pairing-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.pairing-grid.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.pairing-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pairing-field span {
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.pairing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pairing-file-btn {
+  cursor: pointer;
+}
+
+.pairing-status,
+.pairing-hint {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.pairing-status {
+  color: var(--text-1);
+}
+
+.pairing-status.success {
+  color: var(--green);
+}
+
+.pairing-status.error {
+  color: var(--red);
+}
+
+.pairing-hint {
+  color: var(--text-2);
+}
+
+.pairing-scanner {
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: rgba(0,0,0,0.28);
+}
+
+.pairing-scanner video {
+  width: 100%;
+  display: block;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: #03040a;
+}
+
+.pairing-scanner-copy {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
 /* ── Sidebar footer ──────────────────────────────────────── */
 .sidebar-footer {
   border-top: 1px solid var(--border);
@@ -896,6 +1019,10 @@ input::placeholder { color: var(--text-3); }
 /* ── Responsive ──────────────────────────────────────────── */
 @media (max-width: 680px) {
   :root { --sidebar-w: 290px; }
+
+  .pairing-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 
   #sidebar {
     position: absolute;

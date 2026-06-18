@@ -1,0 +1,3 @@
+Keystore: src-tauri/keystore/trakio-release.jks
+  - Password: trakio-release-2026
+  - Alias: trakio

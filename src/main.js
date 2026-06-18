@@ -13,12 +13,8 @@ let selectedDest = null;
 let lastSearchResult = null;
 let toastTimer = null;
 
-// Pi Display streaming
-let piStreamingEnabled = false;
-let piMapMode = 'map'; // 'map' | 'svg'
-
 // Navigation state
-let navRouteCoords = []; // [lat,lng][] sent to Pi for road-following line
+let navRouteCoords = []; // [lat,lng][] handed to the native BLE streamer
 let navSteps = [];
 let navStepIdx = 0;
 let navWatchId = null;
@@ -28,8 +24,6 @@ let navPrevPos = null;       // last known {lat, lng}
 let navAnimFrame = null;     // rAF handle for dot interpolation
 let navArrived = false;      // guard so arrival fires only once
 let navAdvancing = false;    // guard against double-advance on same GPS fix
-let piToggleBtn = null;
-let piStatusEl = null;
 let nativeBackgroundRideActive = false;
 
 
@@ -64,74 +58,11 @@ function toast(msg, duration = 3000) {
   toastTimer = setTimeout(() => el.classList.remove('show'), duration);
 }
 
-async function sendPiPayload(message) {
-  const tauri = window.__TAURI__?.core;
-  if (!tauri || !piStreamingEnabled) return;
-  try {
-    await tauri.invoke('start_ws_server');
-    await tauri.invoke('broadcast_nav', {
-      payload: JSON.stringify(message),
-    });
-  } catch {
-    // ignore transport errors so the app UI keeps working
-  }
-}
-
-window.__trakioIncomingCall = async (payload) => {
-  const caller = payload?.caller || payload?.name || payload?.number || 'Incoming call';
-  await sendPiPayload({
-    type: 'incoming_call',
-    caller,
-    number: payload?.number || '',
-    call_id: payload?.call_id || payload?.id || `${caller}:${Date.now()}`,
-  });
-};
-
+// The Android WebView injects this bridge; it forwards the ride to the native
+// foreground service, which computes nav frames and streams them over BLE.
 function getNativeRideBridge() {
   return window.TrakioAndroidBridge || null;
 }
-
-function syncPiStreamingUI(textOverride) {
-  if (!piToggleBtn || !piStatusEl) return;
-  piToggleBtn.setAttribute('aria-checked', String(piStreamingEnabled));
-  if (piStreamingEnabled) {
-    piStatusEl.textContent = textOverride || (window.__TAURI__?.core ? 'Live on :9001' : 'Enabled (dev)');
-    piStatusEl.classList.add('streaming');
-  } else {
-    piStatusEl.textContent = textOverride || 'Off';
-    piStatusEl.classList.remove('streaming');
-  }
-}
-
-async function ensurePiStreaming(auto = false) {
-  piStreamingEnabled = true;
-  syncPiStreamingUI('Streaming…');
-
-  const tauri = window.__TAURI__?.core;
-  if (tauri) {
-    try {
-      await tauri.invoke('start_ws_server');
-      syncPiStreamingUI('Live on :9001');
-      if (!auto) {
-        toast('Pi Display streaming on — connect the Pi to port 9001');
-      }
-      return;
-    } catch {
-      piStreamingEnabled = false;
-      syncPiStreamingUI('Server error');
-      if (!auto) {
-        toast('Pi Display server error');
-      }
-      return;
-    }
-  }
-
-  syncPiStreamingUI('Enabled (dev)');
-  if (!auto) {
-    toast('Pi Display streaming on — connect the Pi to port 9001');
-  }
-}
-
 
 function formatSeconds(secs) {
   if (!secs && secs !== 0) return null;
@@ -791,6 +722,10 @@ function updateHUD() {
   document.getElementById('nav-remaining-time').textContent = formatSeconds(remDur) || '—';
 }
 
+// Note: the compact { heading, distanceToTurn, instruction, route } payload
+// the ESP32 renders is computed natively in PiNavigationService.kt so it keeps
+// streaming with the screen off. The frontend only kicks off / ends the ride.
+
 // ── Navigation config (tunable) ───────────────────────────
 const NAV_CONFIG = {
   advanceThreshold: 35,       // metres — how close to step end before advancing
@@ -836,11 +771,17 @@ function startNavigation() {
 
   toast('Navigation started');
 
+  // Hand the route to the native foreground service. It owns the GPS loop,
+  // computes the compact nav frames, and streams them to the ESP32 over BLE —
+  // so streaming keeps working with the screen off. The route geometry
+  // (routeCoords) lets it build the local heading-up `route` polyline.
   const routeStartPayload = {
     type: 'route_start',
-    display_mode: piMapMode,
     origin: selectedOrigin,
     destination: selectedDest,
+    destinationName: selectedDest?.name || selectedDest?.formatted_address || 'Destination',
+    totalDistance: navTotalDist,   // metres
+    totalDuration: navTotalDur,    // seconds
     routeCoords: navRouteCoords,
     steps: navSteps.map(s => ({
       instructions: s.instructions,
@@ -852,11 +793,9 @@ function startNavigation() {
   };
 
   const nativeRideBridge = getNativeRideBridge();
-  nativeBackgroundRideActive = Boolean(nativeRideBridge && piStreamingEnabled);
+  nativeBackgroundRideActive = Boolean(nativeRideBridge);
   if (nativeBackgroundRideActive) {
     nativeRideBridge.startBackgroundRide(JSON.stringify(routeStartPayload));
-  } else {
-    sendPiPayload(routeStartPayload);
   }
 
   navWatchId = navigator.geolocation.watchPosition(
@@ -868,21 +807,6 @@ function startNavigation() {
         animateNavDot(navPrevPos.lng, navPrevPos.lat, lng, lat, NAV_CONFIG.easeMs);
       }
       navPrevPos = { lat, lng };
-
-      // Broadcast live position + nav state to Pi display when native background tracking is not active.
-      if (!nativeBackgroundRideActive) {
-        sendPiPayload({
-          type: 'position',
-          display_mode: piMapMode,
-          lat, lng,
-          heading: heading ?? null,
-          speed: speed ?? null,
-          step_idx: navStepIdx,
-          step: navSteps[navStepIdx]?.instructions || '',
-          dist_next: document.getElementById('nav-dist-next')?.textContent || '',
-          arrived: navArrived,
-        });
-      }
 
       // Camera: follow heading when moving (speed in m/s, > 0.3 ≈ walking pace)
       const bearing = NAV_CONFIG.trackHeading && heading != null && speed != null && speed > 0.3
@@ -959,12 +883,11 @@ function endNavigation() {
   map?.easeTo({ pitch: 0, bearing: 0, duration: 600 });
   toast('Navigation ended');
 
-  // Tell the Pi display the ride is over → it returns to the clock screen
+  // Tell the native service the ride is over → it sends route_end over BLE and
+  // tears down the BLE connection + GPS loop.
   const nativeRideBridge = getNativeRideBridge();
   if (nativeBackgroundRideActive && nativeRideBridge) {
     nativeRideBridge.stopBackgroundRide();
-  } else {
-    sendPiPayload({ type: 'route_end' });
   }
   nativeBackgroundRideActive = false;
 }
@@ -1049,41 +972,6 @@ function checkDirectionsReady() {
   document.getElementById('get-directions-btn').disabled = !(selectedOrigin && selectedDest);
 }
 
-// ── Pi Map Mode toggle ────────────────────────────
-function setupMapModeToggle() {
-  const btn    = document.getElementById('map-mode-toggle');
-  const status = document.getElementById('map-mode-status');
-  btn.setAttribute('aria-checked', 'true');
-
-  btn.addEventListener('click', () => {
-    piMapMode = piMapMode === 'map' ? 'svg' : 'map';
-    const isMap = piMapMode === 'map';
-    btn.setAttribute('aria-checked', String(isMap));
-    status.textContent = isMap ? 'Real Map' : 'Turn Diagrams';
-    status.classList.toggle('streaming', isMap);
-    toast(`Pi display: ${isMap ? 'real map' : 'turn diagrams'}`);
-  });
-}
-
-// ── Pi Display toggle ─────────────────────────────────────
-function setupPiToggle() {
-  piToggleBtn = document.getElementById('pi-toggle');
-  piStatusEl = document.getElementById('pi-status');
-
-  syncPiStreamingUI();
-
-  piToggleBtn.addEventListener('click', async () => {
-    if (!piStreamingEnabled) {
-      await ensurePiStreaming(false);
-      return;
-    }
-
-    piStreamingEnabled = false;
-    syncPiStreamingUI('Off');
-    toast('Pi Display streaming off');
-  });
-}
-
 // ── Inject spin keyframe ──────────────────────────────────
 const style = document.createElement('style');
 style.textContent = `@keyframes spin { to { transform: rotate(360deg); } }`;
@@ -1098,7 +986,4 @@ document.addEventListener('DOMContentLoaded', () => {
   setupDirections();
   setupModeSelector();
   setupMapControls();
-  setupPiToggle();
-  setupMapModeToggle();
-  ensurePiStreaming(true);
 });
