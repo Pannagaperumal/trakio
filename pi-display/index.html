@@ -577,6 +577,7 @@ let navigating  = false;
 let posMarker   = null;
 let routeLayer  = null;
 let casingLayer = null;
+let junctionRoadLayers = [];
 let posHeading  = 0;
 let arrivalTimer = null;
 let callToastTimer = null;
@@ -772,6 +773,107 @@ function drawRoute(routeCoords, steps, origin, dest) {
   leafMap.fitBounds(routeLayer.getBounds(), { padding: [44, 44] });
 }
 
+function clearJunctionRoads() {
+  junctionRoadLayers.forEach((layer) => leafMap.removeLayer(layer));
+  junctionRoadLayers = [];
+}
+
+function renderJunctionRoads(junctionRoads) {
+  clearJunctionRoads();
+  if (!junctionRoads?.roads?.length) return;
+
+  junctionRoads.roads.forEach((road) => {
+    if (!road.coords || road.coords.length < 2) return;
+
+    const highlighted = road.id === junctionRoads.highlighted_branch_id;
+    const casing = L.polyline(road.coords, {
+      color: highlighted ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.08)',
+      weight: highlighted ? 10 : 8,
+      lineCap: 'round',
+      lineJoin: 'round',
+      interactive: false,
+    }).addTo(leafMap);
+
+    const line = L.polyline(road.coords, {
+      color: highlighted ? '#a78bfa' : 'rgba(255,255,255,0.26)',
+      weight: highlighted ? 5 : 3,
+      lineCap: 'round',
+      lineJoin: 'round',
+      interactive: false,
+      opacity: highlighted ? 0.98 : 0.9,
+    }).addTo(leafMap);
+
+    junctionRoadLayers.push(casing, line);
+  });
+}
+
+function projectRoadPoint(lat, lng, originLat, originLng) {
+  const dx = (lng - originLng) * 111320 * Math.cos(originLat * Math.PI / 180);
+  const dy = (lat - originLat) * 110540;
+  return { x: dx, y: -dy };
+}
+
+function rotatePoint(point, angleRad) {
+  const s = Math.sin(angleRad);
+  const c = Math.cos(angleRad);
+  return {
+    x: point.x * c - point.y * s,
+    y: point.x * s + point.y * c,
+  };
+}
+
+function renderJunctionDiagram(junctionRoads, maneuver) {
+  if (!junctionRoads?.junction || !junctionRoads?.roads?.length) {
+    document.getElementById('road-svg').innerHTML = DIAG[maneuver] || DIAG.straight;
+    return;
+  }
+
+  const origin = junctionRoads.junction;
+  const roads = junctionRoads.roads
+    .map((road) => ({
+      ...road,
+      points: (road.coords || []).map(([lat, lng]) => projectRoadPoint(lat, lng, origin.lat, origin.lng)),
+    }))
+    .filter((road) => road.points.length >= 2);
+
+  if (!roads.length) {
+    document.getElementById('road-svg').innerHTML = DIAG[maneuver] || DIAG.straight;
+    return;
+  }
+
+  const highlighted = roads.find((road) => road.id === junctionRoads.highlighted_branch_id) || roads[0];
+  const tip = highlighted.points[highlighted.points.length - 1];
+  const rotateBy = Math.atan2(tip.x, -tip.y);
+  const rotated = roads.map((road) => ({
+    ...road,
+    points: road.points.map((point) => rotatePoint(point, -rotateBy)),
+  }));
+
+  const maxExtent = Math.max(
+    24,
+    ...rotated.flatMap((road) => road.points.map((point) => Math.max(Math.abs(point.x), Math.abs(point.y))))
+  );
+  const scale = 34 / maxExtent;
+  const toSvg = (point) => `${(50 + point.x * scale).toFixed(1)},${(50 + point.y * scale).toFixed(1)}`;
+
+  const backgroundPaths = rotated.map((road) => {
+    const points = road.points.map(toSvg).join(' ');
+    return `<polyline points="${points}" stroke="#1b2236" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" fill="none"/>`;
+  }).join('');
+
+  const foregroundPaths = rotated.map((road) => {
+    const points = road.points.map(toSvg).join(' ');
+    const highlightedRoad = road.id === highlighted.id;
+    return `<polyline points="${points}" stroke="${highlightedRoad ? '#a78bfa' : 'rgba(255,255,255,0.18)'}" stroke-width="${highlightedRoad ? 7 : 4}" stroke-linecap="round" stroke-linejoin="round" fill="none"/>`;
+  }).join('');
+
+  document.getElementById('road-svg').innerHTML = `
+    <circle cx="50" cy="50" r="5.5" fill="#0b0d12" stroke="rgba(255,255,255,0.12)" stroke-width="1.6"></circle>
+    ${backgroundPaths}
+    ${foregroundPaths}
+  `;
+}
+
 // ── Helpers ────────────────────────────────────────
 function show(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -867,7 +969,8 @@ function handleMsg(msg) {
     const label    = first?.instructions || 'Head out';
 
     setArrow(maneuver);
-    setDiagram(maneuver);
+    renderJunctionRoads(first?.junction_roads);
+    renderJunctionDiagram(first?.junction_roads, maneuver);
     document.getElementById('map-dist').textContent  = dist;
     document.getElementById('map-label').textContent = label;
     document.getElementById('svg-dist').textContent  = dist;
@@ -901,7 +1004,8 @@ function handleMsg(msg) {
 
     // Update both layers' HUD data
     setArrow(maneuver);
-    setDiagram(maneuver);
+    renderJunctionRoads(sObj?.junction_roads);
+    renderJunctionDiagram(sObj?.junction_roads, maneuver);
     document.getElementById('map-dist').textContent  = dist_next || '—';
     document.getElementById('map-label').textContent = step || '—';
     document.getElementById('svg-dist').textContent  = dist_next || '—';

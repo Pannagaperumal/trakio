@@ -33,6 +33,10 @@ let nativeBackgroundRideActive = false;
 const API = window.__TAURI_INTERNALS__ != null
   ? 'https://api.olamaps.io'
   : '/ola-api';
+const OVERPASS_API = 'https://overpass-api.de/api/interpreter';
+const JUNCTION_QUERY_RADIUS_METERS = 15;
+const JUNCTION_BRANCH_LENGTH_METERS = 35;
+const junctionRoadCache = new Map();
 
 const STYLES = {
   dark: 'https://api.olamaps.io/tiles/vector/v1/styles/default-dark-standard/style.json',
@@ -124,6 +128,246 @@ async function fetchDirections(origin, dest) {
   } catch (e) {
     console.error('[directions] fetch error:', e);
     return null;
+  }
+}
+
+function buildOverpassJunctionQuery(lat, lng) {
+  return `[out:json][timeout:25];
+node(around:${JUNCTION_QUERY_RADIUS_METERS}, ${lat}, ${lng})->.junctionNode;
+way(bn.junctionNode)[highway][highway!~"footway|pedestrian|path|cycleway|service|track"];
+out body;
+>;
+out skel qt;`;
+}
+
+function shouldFetchJunctionRoads(step, index, steps) {
+  if (!step?.end_location || index >= steps.length - 1) return false;
+  const maneuver = String(step.maneuver || '').toLowerCase();
+  return maneuver && maneuver !== 'continue' && maneuver !== 'depart' && maneuver !== 'arrive';
+}
+
+function junctionCacheKey(lat, lng) {
+  return `${lat.toFixed(6)},${lng.toFixed(6)}`;
+}
+
+function normalizeLngDelta(delta) {
+  if (delta > 180) return delta - 360;
+  if (delta < -180) return delta + 360;
+  return delta;
+}
+
+function bearingBetween(a, b) {
+  const lat1 = a.lat * Math.PI / 180;
+  const lat2 = b.lat * Math.PI / 180;
+  const deltaLng = normalizeLngDelta(b.lng - a.lng) * Math.PI / 180;
+  const y = Math.sin(deltaLng) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2)
+    - Math.sin(lat1) * Math.cos(lat2) * Math.cos(deltaLng);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+function angularDiff(a, b) {
+  const diff = Math.abs(a - b) % 360;
+  return diff > 180 ? 360 - diff : diff;
+}
+
+function trimBranchCoords(coords, maxMeters) {
+  if (coords.length < 2) return coords;
+
+  const trimmed = [coords[0]];
+  let coveredMeters = 0;
+
+  for (let i = 1; i < coords.length; i++) {
+    const [prevLat, prevLng] = coords[i - 1];
+    const [lat, lng] = coords[i];
+    const segmentMeters = haversine(prevLat, prevLng, lat, lng);
+    if (coveredMeters + segmentMeters >= maxMeters) {
+      const remainingMeters = maxMeters - coveredMeters;
+      const ratio = segmentMeters > 0 ? remainingMeters / segmentMeters : 0;
+      trimmed.push([
+        prevLat + (lat - prevLat) * ratio,
+        prevLng + (lng - prevLng) * ratio,
+      ]);
+      break;
+    }
+
+    coveredMeters += segmentMeters;
+    trimmed.push([lat, lng]);
+  }
+
+  return trimmed;
+}
+
+function collectBranchNodeIds(nodes, junctionIdx, offset) {
+  const branchNodeIds = [nodes[junctionIdx]];
+  let idx = junctionIdx + offset;
+
+  while (idx >= 0 && idx < nodes.length) {
+    branchNodeIds.push(nodes[idx]);
+    idx += offset;
+  }
+
+  return branchNodeIds;
+}
+
+function parseJunctionRoads(elements, targetLat, targetLng) {
+  try {
+    const nodeMap = new Map();
+    const ways = [];
+
+    for (const element of elements || []) {
+      if (element.type === 'node') {
+        nodeMap.set(element.id, { lat: element.lat, lng: element.lon });
+        continue;
+      }
+
+      if (element.type === 'way' && Array.isArray(element.nodes)) {
+        ways.push(element);
+      }
+    }
+
+    if (!ways.length || !nodeMap.size) return null;
+
+    const incidentWays = new Map();
+    for (const way of ways) {
+      for (const nodeId of way.nodes) {
+        if (!nodeMap.has(nodeId)) continue;
+        if (!incidentWays.has(nodeId)) incidentWays.set(nodeId, new Set());
+        incidentWays.get(nodeId).add(way.id);
+      }
+    }
+
+    const junctionNodeId = [...nodeMap.entries()]
+      .map(([id, coord]) => ({
+        id,
+        coord,
+        distance: haversine(targetLat, targetLng, coord.lat, coord.lng),
+        degree: incidentWays.get(id)?.size || 0,
+      }))
+      .filter((candidate) => candidate.degree > 0)
+      .sort((a, b) => a.distance - b.distance || b.degree - a.degree)[0]?.id;
+
+    if (!junctionNodeId) return null;
+
+    const junction = nodeMap.get(junctionNodeId);
+    const roads = [];
+
+    for (const way of ways) {
+      const idx = way.nodes.indexOf(junctionNodeId);
+      if (idx === -1) continue;
+
+      for (const offset of [-1, 1]) {
+        const nextId = way.nodes[idx + offset];
+        if (!nextId || !nodeMap.has(nextId)) continue;
+
+        const branchNodeIds = collectBranchNodeIds(way.nodes, idx, offset);
+
+        const coords = trimBranchCoords(
+          branchNodeIds
+            .map((nodeId) => nodeMap.get(nodeId))
+            .filter(Boolean)
+            .map((coord) => [coord.lat, coord.lng]),
+          JUNCTION_BRANCH_LENGTH_METERS,
+        );
+
+        if (coords.length < 2) continue;
+
+        roads.push({
+          id: `${way.id}:${offset === -1 ? 'prev' : 'next'}`,
+          way_id: way.id,
+          name: way.tags?.name || way.tags?.ref || 'Unnamed road',
+          highway: way.tags?.highway || '',
+          coords,
+        });
+      }
+    }
+
+    if (!roads.length) return null;
+    return { junction, roads };
+  } catch (error) {
+    console.warn('[junction-roads] parse failed', error);
+    return null;
+  }
+}
+
+function pickHighlightedBranch(roads, junction, nextAnchor) {
+  if (!roads?.length || !junction || !nextAnchor) return null;
+
+  const targetBearing = bearingBetween(junction, nextAnchor);
+  let bestId = null;
+  let bestScore = Infinity;
+
+  for (const road of roads) {
+    if (!road.coords || road.coords.length < 2) continue;
+
+    const [, branchPoint] = road.coords;
+    const branchBearing = bearingBetween(
+      { lat: road.coords[0][0], lng: road.coords[0][1] },
+      { lat: branchPoint[0], lng: branchPoint[1] },
+    );
+    const score = angularDiff(targetBearing, branchBearing);
+
+    if (score < bestScore) {
+      bestScore = score;
+      bestId = road.id;
+    }
+  }
+
+  return bestId;
+}
+
+async function fetchJunctionRoadsForStep(step, index, steps) {
+  const junction = step?.end_location;
+  const nextAnchor = steps[index + 1]?.end_location || selectedDest;
+  if (!junction || !nextAnchor) return null;
+
+  const cacheKey = junctionCacheKey(junction.lat, junction.lng);
+  let baseData = junctionRoadCache.get(cacheKey);
+
+  if (!baseData) {
+    try {
+      const response = await fetch(OVERPASS_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+        body: `data=${encodeURIComponent(buildOverpassJunctionQuery(junction.lat, junction.lng))}`,
+      });
+      if (!response.ok) throw new Error(`Overpass returned ${response.status}`);
+
+      const data = await response.json();
+      baseData = parseJunctionRoads(data.elements, junction.lat, junction.lng);
+      junctionRoadCache.set(cacheKey, baseData);
+    } catch (error) {
+      console.warn('[junction-roads] fetch failed', error);
+      junctionRoadCache.set(cacheKey, null);
+      return null;
+    }
+  }
+
+  if (!baseData) return null;
+
+  return {
+    junction: baseData.junction,
+    highlighted_branch_id: pickHighlightedBranch(baseData.roads, baseData.junction, nextAnchor),
+    roads: baseData.roads,
+  };
+}
+
+async function enrichStepsWithJunctionRoads(steps) {
+  try {
+    return await Promise.all((steps || []).map(async (step, index, allSteps) => {
+      if (!shouldFetchJunctionRoads(step, index, allSteps)) return step;
+
+      try {
+        const junctionRoads = await fetchJunctionRoadsForStep(step, index, allSteps);
+        return junctionRoads ? { ...step, junction_roads: junctionRoads } : step;
+      } catch (error) {
+        console.warn('[junction-roads] step enrichment failed', error);
+        return step;
+      }
+    }));
+  } catch (error) {
+    console.warn('[junction-roads] enrichment fallback to plain steps', error);
+    return steps || [];
   }
 }
 
@@ -531,7 +775,7 @@ function setupDirections() {
     routeInfo.classList.add('visible');
 
     // Store steps for navigation
-    navSteps = leg.steps || [];
+    navSteps = await enrichStepsWithJunctionRoads(leg.steps || []);
     navTotalDist = leg.distance || 0;
     navTotalDur = leg.duration || 0;
 
@@ -789,6 +1033,7 @@ function startNavigation() {
       end_location: s.end_location,
       distance: s.distance,
       duration: s.duration,
+      junction_roads: s.junction_roads || null,
     })),
   };
 
@@ -853,6 +1098,21 @@ function startNavigation() {
           toast('You have arrived at your destination! 🎉', 4000);
           setTimeout(endNavigation, 3000);
         }
+      }
+
+      if (!nativeBackgroundRideActive) {
+        sendPiPayload({
+          type: 'position',
+          lat,
+          lng,
+          heading: heading ?? null,
+          speed: speed ?? null,
+          step_idx: navStepIdx,
+          step: navArrived ? 'Arriving at destination' : (navSteps[navStepIdx]?.instructions || ''),
+          dist_next: navArrived ? '0 m' : (document.getElementById('nav-dist-next')?.textContent || ''),
+          arrived: navArrived,
+          junction_roads: navSteps[navStepIdx]?.junction_roads || null,
+        });
       }
     },
     (err) => {

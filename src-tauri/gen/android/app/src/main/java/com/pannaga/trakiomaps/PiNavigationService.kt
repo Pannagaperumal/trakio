@@ -57,6 +57,7 @@ class PiNavigationService : Service(), LocationListener {
     private const val LOOK_AHEAD_METERS = 200.0  // route distance ahead to send
     private const val MAX_ROUTE_POINTS = 10      // cap on polyline vertices
     private const val METERS_PER_DEG = 111320.0
+    private const val MAX_JUNCTION_ROAD_POINTS = 3
 
     // ── Nordic UART Service (NUS) — match these UUIDs in the ESP32 firmware.
     // The phone writes JSON frames (newline-delimited) to the RX characteristic.
@@ -278,8 +279,38 @@ class PiNavigationService : Service(), LocationListener {
       .put("remainingDistance", remDist.roundToInt())     // metres to destination
       .put("remainingTime", remTime.roundToInt())         // seconds to destination
       .put("eta", System.currentTimeMillis() + (remTime * 1000).toLong()) // epoch ms
+      .put("junctionRoads", buildLocalJunctionRoads(lat, lng, hRad, step))
       .put("arrived", false)
       .toString()
+  }
+
+  private fun buildLocalJunctionRoads(
+    lat: Double,
+    lng: Double,
+    headingRad: Double,
+    step: RouteStep,
+  ): JSONArray {
+    val junctionRoads = step.junctionRoads ?: return JSONArray()
+    val roads = JSONArray()
+
+    for (road in junctionRoads.roads) {
+      if (road.coords.size < 2) continue
+
+      val coords = JSONArray()
+      for (coord in road.coords.take(MAX_JUNCTION_ROAD_POINTS)) {
+        coords.put(toLocalXY(coord.lat, coord.lng, lat, lng, headingRad))
+      }
+
+      if (coords.length() < 2) continue
+
+      roads.put(
+        JSONObject()
+          .put("highlighted", road.id == junctionRoads.highlightedBranchId)
+          .put("coords", coords)
+      )
+    }
+
+    return roads
   }
 
   // Project (lat,lng) into the local heading-up metric frame centred on
@@ -339,6 +370,7 @@ class PiNavigationService : Service(), LocationListener {
               ),
               distanceM = step.optDouble("distance", 0.0),
               durationS = step.optDouble("duration", 0.0),
+              junctionRoads = parseJunctionRoads(step.optJSONObject("junction_roads")),
             )
           )
         }
@@ -376,14 +408,57 @@ class PiNavigationService : Service(), LocationListener {
       ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
       Log.w(TAG, "startLocationUpdates: location permission not granted")
       return
+
+      private fun parseJunctionRoads(json: JSONObject?): JunctionRoads? {
+        if (json == null) return null
+
+        return runCatching {
+          val roadsJson = json.optJSONArray("roads") ?: return null
+          val roads = buildList {
+            for (idx in 0 until roadsJson.length()) {
+              val road = roadsJson.optJSONObject(idx) ?: continue
+              val coordsJson = road.optJSONArray("coords") ?: continue
+              val coords = buildList {
+                for (coordIdx in 0 until coordsJson.length()) {
+                  val pair = coordsJson.optJSONArray(coordIdx) ?: continue
+                  if (pair.length() < 2) continue
+                  add(LatLng(lat = pair.optDouble(0, 0.0), lng = pair.optDouble(1, 0.0)))
+                }
+              }
+              if (coords.size < 2) continue
+
+              add(
+                JunctionRoad(
+                  id = road.optString("id", "road-$idx"),
+                  name = road.optString("name", "Unnamed road"),
+                  highway = road.optString("highway", ""),
+                  coords = coords,
+                )
+              )
+            }
+          }
+
+          if (roads.isEmpty()) return null
+          JunctionRoads(
+            highlightedBranchId = json.optString("highlighted_branch_id").ifBlank { null },
+            roads = roads,
+          )
+        }.getOrElse {
+          Log.w(TAG, "parseJunctionRoads: ignoring malformed payload")
+          null
+        }
+      }
     }
 
+      data class JunctionRoad(val id: String, val name: String, val highway: String, val coords: List<LatLng>)
+      data class JunctionRoads(val highlightedBranchId: String?, val roads: List<JunctionRoad>)
     val manager = locationManager ?: return
     runCatching {
       if (manager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
         manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 1f, this, Looper.getMainLooper())
       }
       if (manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+        val junctionRoads: JunctionRoads?,
         manager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1500L, 1f, this, Looper.getMainLooper())
       }
     }.onFailure { Log.w(TAG, "requestLocationUpdates failed: ${it.message}") }
