@@ -1,5 +1,4 @@
 import { OlaMaps } from 'olamaps-web-sdk';
-import jsQR from 'jsqr';
 
 // ── State ────────────────────────────────────────────────
 let map = null;
@@ -14,12 +13,8 @@ let selectedDest = null;
 let lastSearchResult = null;
 let toastTimer = null;
 
-// Pi Display streaming
-let piStreamingEnabled = false;
-let piMapMode = 'map'; // 'map' | 'svg'
-
 // Navigation state
-let navRouteCoords = []; // [lat,lng][] sent to Pi for road-following line
+let navRouteCoords = []; // [lat,lng][] handed to the native BLE streamer
 let navSteps = [];
 let navStepIdx = 0;
 let navWatchId = null;
@@ -29,11 +24,7 @@ let navPrevPos = null;       // last known {lat, lng}
 let navAnimFrame = null;     // rAF handle for dot interpolation
 let navArrived = false;      // guard so arrival fires only once
 let navAdvancing = false;    // guard against double-advance on same GPS fix
-let piToggleBtn = null;
-let piStatusEl = null;
 let nativeBackgroundRideActive = false;
-let pairingScanFrame = null;
-let pairingStream = null;
 
 
 // ── Constants ─────────────────────────────────────────────
@@ -67,185 +58,11 @@ function toast(msg, duration = 3000) {
   toastTimer = setTimeout(() => el.classList.remove('show'), duration);
 }
 
-function setPairingStatus(message, tone = '') {
-  const el = document.getElementById('pairing-status');
-  if (!el) return;
-  el.textContent = message;
-  el.classList.remove('success', 'error');
-  if (tone) el.classList.add(tone);
-}
-
-function normalizeBluetoothMac(rawValue) {
-  const compact = String(rawValue || '').trim().replace(/[^0-9a-fA-F]/g, '').toUpperCase();
-  if (compact.length !== 12) return null;
-  return compact.match(/.{1,2}/g)?.join(':') || null;
-}
-
-function extractBluetoothMac(rawValue) {
-  const direct = normalizeBluetoothMac(rawValue);
-  if (direct) return direct;
-
-  const match = String(rawValue || '').match(/([0-9A-Fa-f]{2}([:\-]?)){5}[0-9A-Fa-f]{2}/);
-  return match ? normalizeBluetoothMac(match[0]) : null;
-}
-
-function applyDetectedPiMac(rawValue, source) {
-  const mac = extractBluetoothMac(rawValue);
-  if (!mac) {
-    setPairingStatus(`QR decoded, but no Bluetooth MAC found in ${source}.`, 'error');
-    return false;
-  }
-
-  document.getElementById('pi-mac-input').value = mac;
-  setPairingStatus(`Pi MAC captured from ${source}: ${mac}`, 'success');
-  toast(`Pi MAC ready: ${mac}`);
-  return true;
-}
-
-function stopPairingScanner() {
-  if (pairingScanFrame) {
-    cancelAnimationFrame(pairingScanFrame);
-    pairingScanFrame = null;
-  }
-
-  if (pairingStream) {
-    pairingStream.getTracks().forEach((track) => track.stop());
-    pairingStream = null;
-  }
-
-  const scanner = document.getElementById('pairing-scanner');
-  const video = document.getElementById('pairing-video');
-  if (scanner) scanner.hidden = true;
-  if (video) {
-    video.pause();
-    video.srcObject = null;
-  }
-}
-
-function scanPairingVideoFrame() {
-  const video = document.getElementById('pairing-video');
-  const canvas = document.getElementById('pairing-canvas');
-  if (!video || !canvas || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-    pairingScanFrame = requestAnimationFrame(scanPairingVideoFrame);
-    return;
-  }
-
-  const width = video.videoWidth;
-  const height = video.videoHeight;
-  if (!width || !height) {
-    pairingScanFrame = requestAnimationFrame(scanPairingVideoFrame);
-    return;
-  }
-
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  if (!ctx) {
-    setPairingStatus('Camera scan unavailable in this browser.', 'error');
-    stopPairingScanner();
-    return;
-  }
-
-  ctx.drawImage(video, 0, 0, width, height);
-  const image = ctx.getImageData(0, 0, width, height);
-  const code = jsQR(image.data, width, height, { inversionAttempts: 'attemptBoth' });
-  if (code?.data && applyDetectedPiMac(code.data, 'camera')) {
-    stopPairingScanner();
-    return;
-  }
-
-  pairingScanFrame = requestAnimationFrame(scanPairingVideoFrame);
-}
-
-async function decodePairQrFile(file) {
-  const bitmap = await createImageBitmap(file);
-  const canvas = document.getElementById('pairing-canvas');
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  if (!ctx) throw new Error('Canvas not available');
-
-  canvas.width = bitmap.width;
-  canvas.height = bitmap.height;
-  ctx.drawImage(bitmap, 0, 0);
-  const image = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
-  const code = jsQR(image.data, bitmap.width, bitmap.height, { inversionAttempts: 'attemptBoth' });
-
-  if (!code?.data) {
-    throw new Error('No QR code detected in the selected image');
-  }
-
-  if (!applyDetectedPiMac(code.data, 'image upload')) {
-    throw new Error('QR did not contain a Bluetooth MAC address');
-  }
-}
-
-async function sendPiPayload(message) {
-  const tauri = window.__TAURI__?.core;
-  if (!tauri || !piStreamingEnabled) return;
-  try {
-    await tauri.invoke('start_ws_server');
-    await tauri.invoke('broadcast_nav', {
-      payload: JSON.stringify(message),
-    });
-  } catch {
-    // ignore transport errors so the app UI keeps working
-  }
-}
-
-window.__trakioIncomingCall = async (payload) => {
-  const caller = payload?.caller || payload?.name || payload?.number || 'Incoming call';
-  await sendPiPayload({
-    type: 'incoming_call',
-    caller,
-    number: payload?.number || '',
-    call_id: payload?.call_id || payload?.id || `${caller}:${Date.now()}`,
-  });
-};
-
+// The Android WebView injects this bridge; it forwards the ride to the native
+// foreground service, which computes nav frames and streams them over BLE.
 function getNativeRideBridge() {
   return window.TrakioAndroidBridge || null;
 }
-
-function syncPiStreamingUI(textOverride) {
-  if (!piToggleBtn || !piStatusEl) return;
-  piToggleBtn.setAttribute('aria-checked', String(piStreamingEnabled));
-  if (piStreamingEnabled) {
-    piStatusEl.textContent = textOverride || (window.__TAURI__?.core ? 'Live on :9001' : 'Enabled (dev)');
-    piStatusEl.classList.add('streaming');
-  } else {
-    piStatusEl.textContent = textOverride || 'Off';
-    piStatusEl.classList.remove('streaming');
-  }
-}
-
-async function ensurePiStreaming(auto = false) {
-  piStreamingEnabled = true;
-  syncPiStreamingUI('Streaming…');
-
-  const tauri = window.__TAURI__?.core;
-  if (tauri) {
-    try {
-      await tauri.invoke('start_ws_server');
-      syncPiStreamingUI('Live on :9001');
-      if (!auto) {
-        toast('Pi Display streaming on — connect the Pi to port 9001');
-      }
-      return;
-    } catch {
-      piStreamingEnabled = false;
-      syncPiStreamingUI('Server error');
-      if (!auto) {
-        toast('Pi Display server error');
-      }
-      return;
-    }
-  }
-
-  syncPiStreamingUI('Enabled (dev)');
-  if (!auto) {
-    toast('Pi Display streaming on — connect the Pi to port 9001');
-  }
-}
-
 
 function formatSeconds(secs) {
   if (!secs && secs !== 0) return null;
@@ -833,109 +650,6 @@ function setupModeSelector() {
   });
 }
 
-function setupPiPairing() {
-  const scanBtn = document.getElementById('pair-pi-scan-btn');
-  const stopBtn = document.getElementById('pair-pi-stop-scan-btn');
-  const fileInput = document.getElementById('pair-qr-file-input');
-  const sendBtn = document.getElementById('pair-pi-send-btn');
-  const scanner = document.getElementById('pairing-scanner');
-  const video = document.getElementById('pairing-video');
-  const macInput = document.getElementById('pi-mac-input');
-
-  macInput.addEventListener('blur', () => {
-    const normalized = normalizeBluetoothMac(macInput.value);
-    if (normalized) macInput.value = normalized;
-  });
-
-  scanBtn.addEventListener('click', async () => {
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setPairingStatus('Camera scanning is not available here. Upload a QR image instead.', 'error');
-      return;
-    }
-
-    try {
-      pairingStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
-        audio: false,
-      });
-      video.srcObject = pairingStream;
-      await video.play();
-      scanner.hidden = false;
-      setPairingStatus('Scanning QR from camera…');
-      pairingScanFrame = requestAnimationFrame(scanPairingVideoFrame);
-    } catch (error) {
-      console.error('[pairing-scan]', error);
-      setPairingStatus('Camera access failed. Check permissions or upload an image.', 'error');
-      stopPairingScanner();
-    }
-  });
-
-  stopBtn.addEventListener('click', () => {
-    stopPairingScanner();
-    setPairingStatus('Scanner stopped. You can scan again or paste the MAC manually.');
-  });
-
-  fileInput.addEventListener('change', async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    try {
-      await decodePairQrFile(file);
-    } catch (error) {
-      console.error('[pairing-file]', error);
-      setPairingStatus(error.message || 'Could not read QR image.', 'error');
-    } finally {
-      fileInput.value = '';
-    }
-  });
-
-  sendBtn.addEventListener('click', async () => {
-    const ssid = document.getElementById('pi-ssid-input').value.trim();
-    const password = document.getElementById('pi-password-input').value;
-    const mac = normalizeBluetoothMac(macInput.value);
-
-    if (!ssid) {
-      setPairingStatus('Enter the Wi-Fi SSID you want to push to the Pi.', 'error');
-      return;
-    }
-    if (!password) {
-      setPairingStatus('Enter the Wi-Fi password before sending.', 'error');
-      return;
-    }
-    if (!mac) {
-      setPairingStatus('Scan or enter a valid Pi Bluetooth MAC address first.', 'error');
-      return;
-    }
-
-    const tauri = window.__TAURI__?.core;
-    if (!tauri) {
-      setPairingStatus('Bluetooth pairing is only available in the Tauri app.', 'error');
-      return;
-    }
-
-    sendBtn.disabled = true;
-    setPairingStatus(`Connecting to ${mac} over RFCOMM…`);
-
-    try {
-      const response = await tauri.invoke('send_pi_wifi_credentials', {
-        macAddress: mac,
-        ssid,
-        password,
-      });
-      setPairingStatus(response, 'success');
-      toast('Wi-Fi credentials sent to Pi');
-    } catch (error) {
-      console.error('[pairing-send]', error);
-      setPairingStatus(String(error), 'error');
-      toast('Pi pairing failed');
-    } finally {
-      sendBtn.disabled = false;
-    }
-  });
-
-  window.addEventListener('beforeunload', stopPairingScanner);
-}
-
 // ── Navigation helpers ────────────────────────────────────
 function haversine(lat1, lng1, lat2, lng2) {
   const R = 6371000;
@@ -1008,6 +722,10 @@ function updateHUD() {
   document.getElementById('nav-remaining-time').textContent = formatSeconds(remDur) || '—';
 }
 
+// Note: the compact { heading, distanceToTurn, instruction, route } payload
+// the ESP32 renders is computed natively in PiNavigationService.kt so it keeps
+// streaming with the screen off. The frontend only kicks off / ends the ride.
+
 // ── Navigation config (tunable) ───────────────────────────
 const NAV_CONFIG = {
   advanceThreshold: 35,       // metres — how close to step end before advancing
@@ -1053,11 +771,17 @@ function startNavigation() {
 
   toast('Navigation started');
 
+  // Hand the route to the native foreground service. It owns the GPS loop,
+  // computes the compact nav frames, and streams them to the ESP32 over BLE —
+  // so streaming keeps working with the screen off. The route geometry
+  // (routeCoords) lets it build the local heading-up `route` polyline.
   const routeStartPayload = {
     type: 'route_start',
-    display_mode: piMapMode,
     origin: selectedOrigin,
     destination: selectedDest,
+    destinationName: selectedDest?.name || selectedDest?.formatted_address || 'Destination',
+    totalDistance: navTotalDist,   // metres
+    totalDuration: navTotalDur,    // seconds
     routeCoords: navRouteCoords,
     steps: navSteps.map(s => ({
       instructions: s.instructions,
@@ -1069,11 +793,9 @@ function startNavigation() {
   };
 
   const nativeRideBridge = getNativeRideBridge();
-  nativeBackgroundRideActive = Boolean(nativeRideBridge && piStreamingEnabled);
+  nativeBackgroundRideActive = Boolean(nativeRideBridge);
   if (nativeBackgroundRideActive) {
     nativeRideBridge.startBackgroundRide(JSON.stringify(routeStartPayload));
-  } else {
-    sendPiPayload(routeStartPayload);
   }
 
   navWatchId = navigator.geolocation.watchPosition(
@@ -1085,21 +807,6 @@ function startNavigation() {
         animateNavDot(navPrevPos.lng, navPrevPos.lat, lng, lat, NAV_CONFIG.easeMs);
       }
       navPrevPos = { lat, lng };
-
-      // Broadcast live position + nav state to Pi display when native background tracking is not active.
-      if (!nativeBackgroundRideActive) {
-        sendPiPayload({
-          type: 'position',
-          display_mode: piMapMode,
-          lat, lng,
-          heading: heading ?? null,
-          speed: speed ?? null,
-          step_idx: navStepIdx,
-          step: navSteps[navStepIdx]?.instructions || '',
-          dist_next: document.getElementById('nav-dist-next')?.textContent || '',
-          arrived: navArrived,
-        });
-      }
 
       // Camera: follow heading when moving (speed in m/s, > 0.3 ≈ walking pace)
       const bearing = NAV_CONFIG.trackHeading && heading != null && speed != null && speed > 0.3
@@ -1176,12 +883,11 @@ function endNavigation() {
   map?.easeTo({ pitch: 0, bearing: 0, duration: 600 });
   toast('Navigation ended');
 
-  // Tell the Pi display the ride is over → it returns to the clock screen
+  // Tell the native service the ride is over → it sends route_end over BLE and
+  // tears down the BLE connection + GPS loop.
   const nativeRideBridge = getNativeRideBridge();
   if (nativeBackgroundRideActive && nativeRideBridge) {
     nativeRideBridge.stopBackgroundRide();
-  } else {
-    sendPiPayload({ type: 'route_end' });
   }
   nativeBackgroundRideActive = false;
 }
@@ -1266,41 +972,6 @@ function checkDirectionsReady() {
   document.getElementById('get-directions-btn').disabled = !(selectedOrigin && selectedDest);
 }
 
-// ── Pi Map Mode toggle ────────────────────────────
-function setupMapModeToggle() {
-  const btn    = document.getElementById('map-mode-toggle');
-  const status = document.getElementById('map-mode-status');
-  btn.setAttribute('aria-checked', 'true');
-
-  btn.addEventListener('click', () => {
-    piMapMode = piMapMode === 'map' ? 'svg' : 'map';
-    const isMap = piMapMode === 'map';
-    btn.setAttribute('aria-checked', String(isMap));
-    status.textContent = isMap ? 'Real Map' : 'Turn Diagrams';
-    status.classList.toggle('streaming', isMap);
-    toast(`Pi display: ${isMap ? 'real map' : 'turn diagrams'}`);
-  });
-}
-
-// ── Pi Display toggle ─────────────────────────────────────
-function setupPiToggle() {
-  piToggleBtn = document.getElementById('pi-toggle');
-  piStatusEl = document.getElementById('pi-status');
-
-  syncPiStreamingUI();
-
-  piToggleBtn.addEventListener('click', async () => {
-    if (!piStreamingEnabled) {
-      await ensurePiStreaming(false);
-      return;
-    }
-
-    piStreamingEnabled = false;
-    syncPiStreamingUI('Off');
-    toast('Pi Display streaming off');
-  });
-}
-
 // ── Inject spin keyframe ──────────────────────────────────
 const style = document.createElement('style');
 style.textContent = `@keyframes spin { to { transform: rotate(360deg); } }`;
@@ -1315,8 +986,4 @@ document.addEventListener('DOMContentLoaded', () => {
   setupDirections();
   setupModeSelector();
   setupMapControls();
-  setupPiToggle();
-  setupMapModeToggle();
-  setupPiPairing();
-  ensurePiStreaming(true);
 });
