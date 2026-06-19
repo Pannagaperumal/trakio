@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trakio — junction view concepts</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; padding:40px; background:#05070d; color:#c7d0dd;
+    font-family: system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  h1 { font-size:16px; letter-spacing:2px; color:#8a93a0; font-weight:600; text-align:center; }
+  p.note { text-align:center; color:#586173; font-size:13px; max-width:760px; margin:8px auto 30px; line-height:1.5; }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:34px 24px; max-width:880px; margin:0 auto; }
+  .cell { display:flex; flex-direction:column; align-items:center; gap:12px; }
+  .bezel { width:240px; height:240px; border-radius:50%;
+    background:radial-gradient(circle at 50% 35%,#1b2230,#07090f 75%);
+    padding:10px; box-shadow:0 18px 50px rgba(0,0,0,.6), inset 0 0 0 2px #20283a; }
+  .screen { width:220px; height:220px; border-radius:50%; overflow:hidden; box-shadow:inset 0 0 30px rgba(0,0,0,.7); }
+  canvas { width:220px; height:220px; display:block; }
+  .label { font-size:13px; color:#aeb7c5; }
+  .tag { font-size:11px; color:#586173; }
+</style>
+</head>
+<body>
+  <h1>JUNCTION VIEW CONCEPTS</h1>
+  <p class="note">From Ola we get the <b>maneuver</b>, the <b>turn angle</b> (bearing in/out) and the <b>street name</b> —
+  so we can draw an angle-accurate schematic of your turn. The faint grey roads are <b>generic context</b>
+  (Ola does not provide the real cross-streets). Below: the current route-line view vs. junction concepts.</p>
+
+  <div class="grid" id="grid"></div>
+
+<script>
+const C_BG='#0B0F1A', C_BG2='#131C30', C_ACCENT='#12E29C', C_ROUTE='#4C8DFF',
+      C_CASING='#21304E', C_GHOST='#1A2236', C_TEXT='#F5F7FA', C_DIM='#7A869A';
+const W=240,H=240;
+
+const cells = [
+  {t:'Route line (current)', s:'route',    man:'turn-right', street:'Kasturba Road', dist:120},
+  {t:'Junction · context',   s:'junction', man:'turn-right', street:'Kasturba Road', dist:60},
+  {t:'Junction · left',      s:'junction', man:'turn-left',  street:'Magrath Road',  dist:80},
+  {t:'Junction · slight L',  s:'junction', man:'turn-slight-left', street:'Srinivagilu Rd', dist:90},
+  {t:'Junction · U-turn',    s:'junction', man:'u-turn',     street:'Vittal Mallya Rd', dist:40},
+  {t:'Highway exit',         s:'exit',     man:'off-ramp',   street:'Exit · Outer Ring Rd', dist:400},
+  {t:'Maneuver arrow',       s:'arrow',    man:'turn-right', street:'Kasturba Road', dist:60},
+];
+
+const grid = document.getElementById('grid');
+cells.forEach((c,i)=>{
+  const cell=document.createElement('div'); cell.className='cell';
+  cell.innerHTML=`<div class="bezel"><div class="screen"><canvas id="cv${i}"></canvas></div></div>
+                  <div class="label">${c.t}</div><div class="tag">${c.man} · ${c.dist} m</div>`;
+  grid.appendChild(cell);
+  const cv=cell.querySelector('canvas'); const dpr=2;
+  cv.width=W*dpr; cv.height=H*dpr; const ctx=cv.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  draw(ctx,c);
+});
+
+// angle from "up", + = right (degrees)
+function angleFor(m){
+  if(m==='u-turn') return 165;
+  if(m==='turn-sharp-right') return 132; if(m==='turn-sharp-left') return -132;
+  if(m==='turn-slight-right') return 38; if(m==='turn-slight-left') return -38;
+  if(m==='turn-right') return 85; if(m==='turn-left') return -85;
+  return 0;
+}
+function arrowGlyph(m){ if(m.includes('left'))return '←'; if(m.includes('right'))return '→';
+  if(m==='u-turn')return '⟳'; return '↑'; }
+function bg(ctx){ const g=ctx.createLinearGradient(0,0,0,H); g.addColorStop(0,C_BG); g.addColorStop(1,C_BG2);
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H); }
+function line(ctx,x1,y1,x2,y2,w,col){ ctx.lineWidth=w; ctx.lineCap='round'; ctx.strokeStyle=col;
+  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); }
+function txt(ctx,s,x,y,col,size,wt='600'){ ctx.fillStyle=col; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`${wt} ${size}px system-ui,Roboto,sans-serif`; ctx.fillText(s,x,y); }
+function dot(ctx,x,y,r,col){ ctx.fillStyle=col; ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fill(); }
+
+function draw(ctx,c){
+  bg(ctx);
+  if(c.s==='route') return drawRouteLine(ctx);
+  if(c.s==='arrow') return drawArrow(ctx,c);
+  return drawJunction(ctx,c);
+}
+
+// 1) current route-line view (sample curving route)
+function drawRouteLine(ctx){
+  const route=[[0,0],[-6,22],[-6,40],[-12,62],[-4,88],[14,112],[28,140]];
+  const MAP_CX=120,MAP_CY=130,R=60; let maxR=1;
+  route.forEach(([x,y])=>maxR=Math.max(maxR,Math.hypot(x,y)));
+  const sc=R/maxR; const pts=route.map(([x,y])=>[MAP_CX+x*sc,MAP_CY-y*sc]);
+  const stroke=(w,col)=>{ ctx.lineWidth=w; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.strokeStyle=col;
+    ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]); pts.slice(1).forEach(p=>ctx.lineTo(p[0],p[1])); ctx.stroke(); };
+  stroke(18,C_CASING); stroke(9,C_ROUTE);
+  dot(ctx,MAP_CX,MAP_CY,8,C_ROUTE); ctx.lineWidth=3; ctx.strokeStyle=C_TEXT; ctx.stroke();
+  txt(ctx,'→',78,46,C_ACCENT,34); txt(ctx,'120 m',150,48,C_TEXT,24);
+  txt(ctx,'2.0 km  -  6 min',120,210,C_ACCENT,17);
+}
+
+// 2) schematic junction with generic context roads
+function drawJunction(ctx,c){
+  const cx=120, cy=126, L=92;
+  const a=angleFor(c.man)*Math.PI/180;
+  const ex=cx+Math.sin(a)*L, ey=cy-Math.cos(a)*L;
+
+  // generic context roads (ghost) — a crossroads backdrop
+  line(ctx,cx,cy+L,cx,cy-L,16,C_GHOST);   // vertical road through junction
+  line(ctx,cx-L,cy,cx+L,cy,16,C_GHOST);   // crossing road
+
+  // highlighted route: approach (from bottom) + exit (at real angle)
+  line(ctx,cx,cy+L,cx,cy,18,C_CASING);
+  line(ctx,cx,cy,ex,ey,18,C_CASING);
+  line(ctx,cx,cy+L,cx,cy,9,C_ROUTE);
+  line(ctx,cx,cy,ex,ey,9,C_ROUTE);
+
+  // position marker on the approach
+  dot(ctx,cx,cy+58,8,C_ROUTE); ctx.lineWidth=3; ctx.strokeStyle=C_TEXT; ctx.stroke();
+
+  // header + footer
+  txt(ctx,arrowGlyph(c.man),74,40,C_ACCENT,32);
+  txt(ctx,c.dist+' m',150,42,C_TEXT,24);
+  txt(ctx,c.street,120,212,C_TEXT,15);
+}
+
+// 3) minimal maneuver arrow (no context roads)
+function drawArrow(ctx,c){
+  const cx=120,cy=130;
+  // single road
+  line(ctx,cx,cy+78,cx,cy,20,C_CASING);
+  const a=angleFor(c.man)*Math.PI/180, L=78;
+  const ex=cx+Math.sin(a)*L, ey=cy-Math.cos(a)*L;
+  line(ctx,cx,cy,ex,ey,20,C_CASING);
+  line(ctx,cx,cy+78,cx,cy,10,C_ROUTE);
+  line(ctx,cx,cy,ex,ey,10,C_ROUTE);
+  // arrow head at exit end
+  ctx.fillStyle=C_ROUTE; ctx.save(); ctx.translate(ex,ey); ctx.rotate(a);
+  ctx.beginPath(); ctx.moveTo(0,-16); ctx.lineTo(11,6); ctx.lineTo(-11,6); ctx.closePath(); ctx.fill(); ctx.restore();
+  txt(ctx,c.dist+' m',120,44,C_TEXT,26);
+  txt(ctx,c.street,120,210,C_DIM,15);
+}
+</script>
+</body>
+</html>

@@ -7,12 +7,19 @@
 //   {"type":"route_start","destination":"MG Road","totalDistance":5200,"totalDuration":900}
 //   {"type":"nav","heading":87,"distanceToTurn":120,"instruction":"RIGHT",
 //    "route":[[0,0],[-5,20],...],"remainingDistance":4200,"remainingTime":760,
-//    "eta":1718712345678,"arrived":false}
+//    "eta":1718712345678,
+//    "junctionRoads":[{"highlighted":true,"coords":[[0,40],[6,70]]},
+//                     {"highlighted":false,"coords":[[-30,40],[-60,40]]}],
+//    "arrived":false}
 //   {"type":"incoming_call","caller":"Mom","number":"+91...","call_id":"..."}
 //   {"type":"route_end"}
 //
-// `route` is a heading-up local frame in metres: [0,0] is the rider,
-// +y = forward (up on screen), +x = right. Scale to your display.
+// `route` and every junction-road `coords` share one HEADING-UP (track-up)
+// local frame in metres: [0,0] is the rider, +y = forward (up on screen),
+// +x = right. The direction of travel is always up, so the position arrow
+// stays fixed pointing up and the map turns on bends. Scale to your display.
+// `junctionRoads` are the cross-streets near the next maneuver; the
+// "highlighted":true entry is the branch the route takes.
 //
 // Requires the ArduinoJson library (v7.x) — install via the Library Manager.
 
@@ -20,11 +27,12 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <ArduinoJson.h>
+#include <lvgl.h>
+#include "nav_state.h"   // MAX_ROUTE_POINTS + shared state declarations
+#include "ui.h"
 
 #define SERVICE_UUID        "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CHARACTERISTIC_UUID "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
-
-#define MAX_ROUTE_POINTS 16
 
 // ── Trip summary (set once at route_start) ──
 String          tripDestination = "";       // destination name
@@ -43,6 +51,13 @@ bool            navArrived      = false;
 int             routeX[MAX_ROUTE_POINTS];   // local metres, +x = right
 int             routeY[MAX_ROUTE_POINTS];   // local metres, +y = forward
 int             routeLen        = 0;
+
+// ── Junction context roads (same local frame as route) ──
+int             junctionRoadCount = 0;
+int             junctionRoadLen[MAX_JUNCTION_ROADS]   = {0};
+bool            junctionHighlighted[MAX_JUNCTION_ROADS] = {false};
+int             junctionX[MAX_JUNCTION_ROADS][MAX_JUNCTION_ROAD_POINTS];
+int             junctionY[MAX_JUNCTION_ROADS][MAX_JUNCTION_ROAD_POINTS];
 
 // ── Incoming call state ──
 bool    callActive = false;
@@ -100,6 +115,27 @@ static void handleFrame(const String &line) {
       routeLen++;
     }
 
+    // Junction context roads (cross-streets near the maneuver). Each road
+    // carries a `highlighted` flag and a short polyline in the same frame.
+    junctionRoadCount = 0;
+    JsonArray roads = doc["junctionRoads"].as<JsonArray>();
+    for (JsonObject road : roads) {
+      if (junctionRoadCount >= MAX_JUNCTION_ROADS) break;
+      int r = junctionRoadCount;
+      junctionHighlighted[r] = road["highlighted"] | false;
+      int n = 0;
+      JsonArray coords = road["coords"].as<JsonArray>();
+      for (JsonArray pt : coords) {
+        if (n >= MAX_JUNCTION_ROAD_POINTS) break;
+        junctionX[r][n] = pt[0] | 0;
+        junctionY[r][n] = pt[1] | 0;
+        n++;
+      }
+      if (n < 2) continue;   // need at least a segment to draw
+      junctionRoadLen[r] = n;
+      junctionRoadCount++;
+    }
+
     Serial.print("NAV ");
     Serial.print(navInstruction);
     Serial.print(" in ");
@@ -108,7 +144,9 @@ static void handleFrame(const String &line) {
     Serial.print(navHeading);
     Serial.print(", ");
     Serial.print(routeLen);
-    Serial.println(" pts");
+    Serial.print(" pts, ");
+    Serial.print(junctionRoadCount);
+    Serial.println(" jct roads");
 
   } else if (strcmp(type, "incoming_call") == 0) {
     callActive = true;
@@ -121,6 +159,7 @@ static void handleFrame(const String &line) {
     navActive  = false;
     callActive = false;
     routeLen   = 0;
+    junctionRoadCount = 0;
     Serial.println("ROUTE END");
   }
 }
@@ -185,11 +224,19 @@ void setup() {
   BLEDevice::startAdvertising();
 
   Serial.println("BLE READY — advertising as Trakio-Navigator");
+
+  // ── Display + LVGL ──────────────────────────────────────
+  lv_init();
+  // TODO: initialise YOUR panel and register an LVGL display + draw buffer
+  //   here. This is hardware-specific — e.g. a 320x240 landscape ILI9341/ST7789
+  //   panel via TFT_eSPI + lv_disp_drv_register(), or the LVGL Arduino example.
+  //   ui_init() must run AFTER a display is registered (it draws on the active
+  //   screen).
+  ui_init();
 }
 
 void loop() {
-  // Your LVGL render loop reads the decoded globals above:
-  //   navActive, navHeading, navDistanceToTurn, navInstruction, navArrived,
-  //   routeX[]/routeY[]/routeLen, callActive/callCaller/callNumber.
-  delay(50);
+  lv_timer_handler();   // drive LVGL rendering
+  ui_update();          // push the latest decoded nav state into the UI
+  delay(5);
 }

@@ -68,6 +68,14 @@ class PiNavigationService : Service(), LocationListener {
     // otherwise the first bonded device is used. Empty = no name preference.
     private const val TARGET_NAME_SUBSTR = "trakio"
 
+    // ── Smooth frame interpolation between ~1 Hz GPS fixes ──
+    // We emit at a higher cadence, dead-reckoning position from the last fix
+    // and easing heading, so the display moves fluidly instead of jumping.
+    private const val EMIT_INTERVAL_MS = 150L     // ~6.5 Hz smooth frame cadence (BLE-safe)
+    private const val MAX_EXTRAPOLATION_M = 40.0  // cap drift if GPS stalls
+    private const val HEADING_EASE = 0.22         // per-tick heading smoothing (0..1)
+    private const val POS_EASE = 0.34             // per-tick position correction (0..1)
+
     private const val REQUESTED_MTU = 247
     private const val RECONNECT_BASE_DELAY_MS = 2000L
     private const val RECONNECT_MAX_DELAY_MS = 15000L
@@ -89,6 +97,29 @@ class PiNavigationService : Service(), LocationListener {
   @Volatile private var navActive = false
   private var lastCallSignature = ""
   private var lastCallAt = 0L
+
+  // ── Smoothing state: last GPS fix + eased position/heading we emit from ──
+  private var fixLat = 0.0
+  private var fixLng = 0.0
+  private var fixTimeMs = 0L
+  private var fixSpeed = 0.0          // m/s along travel
+  private var prevFixLat = 0.0
+  private var prevFixLng = 0.0
+  private var prevFixTimeMs = 0L
+  private var targetHeading = 0.0     // latest raw bearing (deg)
+  private var smoothHeading = 0.0     // eased heading we render with
+  private var emitLat = 0.0           // last emitted (eased) position
+  private var emitLng = 0.0
+  private var smoothInit = false
+
+  // High-rate emitter: builds an interpolated frame ~every EMIT_INTERVAL_MS so
+  // the display sees small, continuous changes between 1 Hz GPS fixes.
+  private val emitRunnable = object : Runnable {
+    override fun run() {
+      if (navActive && !navArrived) emitSmoothFrame()
+      if (navActive) mainHandler.postDelayed(this, EMIT_INTERVAL_MS)
+    }
+  }
 
   // ── BLE state (touched from both the main thread and GATT callback thread) ──
   @Volatile private var bluetoothGatt: BluetoothGatt? = null
@@ -129,6 +160,8 @@ class PiNavigationService : Service(), LocationListener {
         navActive = true
         navArrived = false
         navStepIdx = 0
+        smoothInit = false
+        fixTimeMs = 0L
         if (!parseRoutePayload(payload)) {
           Log.w(TAG, "start aborted: could not parse route payload")
           stopNavigation(sendRouteEnd = false)
@@ -140,6 +173,8 @@ class PiNavigationService : Service(), LocationListener {
         registerPhoneStateReceiver()
         registerBtStateReceiver()
         startLocationUpdates()
+        mainHandler.removeCallbacks(emitRunnable)
+        mainHandler.postDelayed(emitRunnable, EMIT_INTERVAL_MS)
       }
 
       ACTION_STOP_NAVIGATION -> stopNavigation(sendRouteEnd = true)
@@ -197,16 +232,35 @@ class PiNavigationService : Service(), LocationListener {
 
     val step = routeSteps.getOrNull(navStepIdx) ?: return
     val distToEnd = distanceTo(location, step.endLocation)
-    val heading = if (location.hasBearing()) location.bearing.toDouble() else 0.0
+    val rawHeading = if (location.hasBearing()) location.bearing.toDouble() else targetHeading
 
-    sendFrame(computeMiniMap(location.latitude, location.longitude, heading, step, distToEnd))
+    // Record this fix; the high-rate emitter (emitSmoothFrame) interpolates
+    // between fixes so the display moves continuously rather than in 1 Hz jumps.
+    val now = System.currentTimeMillis()
+    prevFixLat = fixLat; prevFixLng = fixLng; prevFixTimeMs = fixTimeMs
+    fixLat = location.latitude
+    fixLng = location.longitude
+    fixTimeMs = now
+    fixSpeed = when {
+      location.hasSpeed() -> location.speed.toDouble()
+      prevFixTimeMs != 0L && now > prevFixTimeMs ->
+        BleNavFrameBuilder.haversine(prevFixLat, prevFixLng, fixLat, fixLng) / ((now - prevFixTimeMs) / 1000.0)
+      else -> fixSpeed
+    }
+    targetHeading = rawHeading
+    if (!smoothInit) {
+      smoothHeading = rawHeading
+      emitLat = fixLat
+      emitLng = fixLng
+      smoothInit = true
+    }
 
     if (navStepIdx == routeSteps.lastIndex && distToEnd < ARRIVAL_THRESHOLD_METERS) {
       navArrived = true
       sendFrame(
         JSONObject()
           .put("type", "nav")
-          .put("heading", heading.roundToInt())
+          .put("heading", smoothHeading.roundToInt())
           .put("distanceToTurn", 0)
           .put("instruction", "ARRIVE")
           .put("route", JSONArray().put(JSONArray().put(0).put(0)))
@@ -218,6 +272,42 @@ class PiNavigationService : Service(), LocationListener {
       )
       stopNavigation(sendRouteEnd = false)
     }
+  }
+
+  // Emit one interpolated nav frame: dead-reckon position forward from the last
+  // fix along the eased heading, and ease both heading and the position
+  // correction so motion stays smooth between sparse GPS updates.
+  private fun emitSmoothFrame() {
+    if (!smoothInit || routeSteps.isEmpty()) return
+    val step = routeSteps.getOrNull(navStepIdx) ?: return
+
+    // Ease heading toward the latest bearing (shortest-arc).
+    smoothHeading = easeAngle(smoothHeading, targetHeading, HEADING_EASE)
+
+    // Predict where we are now from the last fix using speed + heading.
+    val dt = ((System.currentTimeMillis() - fixTimeMs) / 1000.0).coerceAtLeast(0.0)
+    val travel = (fixSpeed * dt).coerceAtMost(MAX_EXTRAPOLATION_M)
+    val rad = Math.toRadians(smoothHeading)
+    val predLat = fixLat + (travel * Math.cos(rad)) / METERS_PER_DEG
+    val predLng = fixLng + (travel * Math.sin(rad)) / (METERS_PER_DEG * Math.cos(Math.toRadians(fixLat)))
+
+    // Ease the emitted position toward the prediction so new fixes don't snap.
+    emitLat += (predLat - emitLat) * POS_EASE
+    emitLng += (predLng - emitLng) * POS_EASE
+
+    val distToEnd = BleNavFrameBuilder.haversine(emitLat, emitLng, step.endLocation.lat, step.endLocation.lng)
+    sendFrame(computeMiniMap(emitLat, emitLng, smoothHeading, step, distToEnd))
+  }
+
+  // Ease angle a → b along the shortest arc; alpha in 0..1.
+  private fun easeAngle(a: Double, b: Double, alpha: Double): Double {
+    var diff = (b - a) % 360.0
+    if (diff < -180.0) diff += 360.0
+    if (diff > 180.0) diff -= 360.0
+    var r = a + diff * alpha
+    if (r < 0) r += 360.0
+    if (r >= 360.0) r -= 360.0
+    return r
   }
 
   override fun onProviderEnabled(provider: String) = Unit
@@ -375,6 +465,8 @@ class PiNavigationService : Service(), LocationListener {
     navActive = false
     navArrived = false
     navStepIdx = 0
+    smoothInit = false
+    mainHandler.removeCallbacks(emitRunnable)
     routeSteps = emptyList()
     routeCoords = emptyList()
     routeStartFrame = null
@@ -875,6 +967,10 @@ internal object BleNavFrameBuilder {
     return roads
   }
 
+  // Heading-up (track-up) local frame in metres relative to the rider:
+  // x = right, y = forward (up on screen). Points are rotated by the rider's
+  // heading so the direction of travel is always up — the display keeps the
+  // position arrow fixed pointing up and the map turns on bends.
   private fun toLocalXY(lat: Double, lng: Double, lat0: Double, lng0: Double, headingRad: Double): JSONArray {
     val dNorth = (lat - lat0) * 111320.0
     val dEast = (lng - lng0) * 111320.0 * cos(Math.toRadians(lat0))

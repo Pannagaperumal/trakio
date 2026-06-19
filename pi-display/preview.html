@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trakio Navigator — display preview</title>
+<style>
+  :root { --mint:#12E29C; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 28px;
+    background: #05070d; color: #c7d0dd;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  h1 { font-size: 15px; font-weight: 600; letter-spacing: 3px; color: #7A869A; margin: 0; }
+  .bezel {
+    /* 320×240 → 2x. Landscape rectangle with rounded corners. */
+    width: 680px; height: 520px; border-radius: 28px;
+    background: radial-gradient(circle at 50% 35%, #1b2230, #07090f 75%);
+    padding: 20px; box-shadow: 0 30px 80px rgba(0,0,0,.6), inset 0 0 0 2px #20283a;
+  }
+  .screen {
+    width: 640px; height: 480px; border-radius: 12px; overflow: hidden;
+    box-shadow: inset 0 0 40px rgba(0,0,0,.7);
+  }
+  canvas { width: 640px; height: 480px; display: block; }
+  .controls { display: flex; gap: 10px; }
+  button {
+    background: #161c2c; color: #c7d0dd; border: 1px solid #28324a;
+    padding: 9px 16px; border-radius: 10px; font-size: 13px; cursor: pointer;
+    transition: .15s;
+  }
+  button:hover { border-color: var(--mint); color: #fff; }
+  button.active { background: var(--mint); color: #06231a; border-color: var(--mint); font-weight: 600; }
+  button.callon { background: #FF4D5E; color: #fff; border-color: #FF4D5E; font-weight: 600; }
+  .hint { font-size: 12px; color: #586173; }
+</style>
+</head>
+<body>
+  <h1>TRAKIO · 320×240 RECTANGULAR DISPLAY</h1>
+  <div class="bezel"><div class="screen"><canvas id="c"></canvas></div></div>
+  <div class="controls">
+    <button data-s="home">Home</button>
+    <button data-s="nav" class="active">Navigation</button>
+    <button data-s="done">Arrived</button>
+    <button id="call">☎ Call toast</button>
+    <button id="demo">▶ Demo ride</button>
+  </div>
+  <p class="hint">1:1 mock of ui.cpp — track-up map (rotates on turns) under a fixed green arrow,
+     route in brand colour, calls as a top toast, full-screen arrival. Demo streams eased ~6.5&#8202;Hz frames (matches the phone) for seamless motion.</p>
+
+<script>
+// ── Match ui.cpp constants ───────────────────────────────
+const W = 320, H = 240, CX = 160, CY = 120;
+const PANEL_W = 112;
+const MAP_X0 = 116, MAP_X1 = 314, MAP_Y0 = 12, MAP_Y1 = 200;
+const MAP_RCX = (MAP_X0 + MAP_X1) / 2, MAP_RCY = (MAP_Y0 + MAP_Y1) / 2;
+const MAP_PAD = 16, MAP_MAXSCALE = 4.0;
+const CASING_W = 16, ROUTE_W = 9, GHOST_W = 13;
+
+const C_BG='#0B0F1A', C_BG2='#131C30', C_SURF='#1B2336', C_ACCENT='#12E29C',
+      C_ROUTE='#12E29C', C_CASING='#0C3D31', C_GHOST='#2B3858', C_GHOSTC='#141C30',
+      C_MAPBG='#0E1626', C_MAPBG2='#0A111E', C_MAPBRD='#1E2942',
+      C_TEXT='#F5F7FA', C_DIM='#7A869A', C_CALL='#FF4D5E', C_CALL2='#B91D33';
+
+// ── The master ride used by the demo (static heading-up frame, metres) ──
+// route turns right at the junction (~[0,70]); junction roads anchored there.
+const masterRoute = [[0,0],[0,30],[0,70],[20,95],[45,115],[80,150],[120,182]];
+const masterJunctions = [
+  [[-58,70],[0,70],[56,66]],   // main cross street
+  [[0,70],[4,135]],            // straight-ahead continuation
+  [[0,70],[-40,36]],           // slip road back-left
+  [[0,70],[44,46]],            // diagonal branch
+  [[-58,70],[-72,104]],        // side road off the cross street
+];
+function routeLength(r){ let s=0; for(let i=1;i<r.length;i++) s+=Math.hypot(r[i][0]-r[i-1][0],r[i][1]-r[i-1][1]); return s; }
+const MASTER_LEN = routeLength(masterRoute);
+
+// ── Simulated nav state (mirrors nav_state.h) ────────────
+// route + junctionRoads share the heading-up local frame: [x(right), y(forward)]
+const state = {
+  screen: 'nav',
+  callActive: false,
+  tripDestination: 'MG Road, Bengaluru',
+  tripTotalDist: 9628, tripTotalDur: 1511,
+  navInstruction: 'RIGHT', navDistanceToTurn: 120,
+  navRemainingDist: 6200, navRemainingTime: 980,
+  navArrived: false,
+  caller: 'Mom', number: '+91 98765 43210',
+  route: masterRoute.map(p => p.slice()),
+  junctionRoads: masterJunctions.map(c => ({ highlighted:false, coords:c.map(p=>p.slice()) })),
+};
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const DPR = Math.max(2, window.devicePixelRatio || 1);
+canvas.width = W * DPR; canvas.height = H * DPR;
+function rescale(){ ctx.setTransform(canvas.width/W,0,0,canvas.height/H,0,0); }
+rescale();
+
+// ── helpers ──
+function vGrad(a,b){ const g=ctx.createLinearGradient(0,0,0,H); g.addColorStop(0,a); g.addColorStop(1,b); return g; }
+function hGrad(a,b){ const g=ctx.createLinearGradient(0,0,W,0); g.addColorStop(0,a); g.addColorStop(1,b); return g; }
+function fmtDist(m){ return m>=1000 ? (m/1000).toFixed(1)+' km' : Math.round(m)+' m'; }
+function fmtTime(s){ if(s>=3600) return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m'; const m=Math.max(1,Math.round(s/60)); return m+' min'; }
+function arrowFor(i){ if(i.includes('LEFT'))return '←'; if(i.includes('RIGHT'))return '→';
+  if(i==='UTURN'||i==='ROUNDABOUT')return '⟳'; if(i==='ARRIVE')return '✓'; return '↑'; }
+function text(s,x,y,col,size,weight='600',align='center'){
+  ctx.fillStyle=col; ctx.textAlign=align; ctx.textBaseline='middle';
+  ctx.font=`${weight} ${size}px system-ui,"Segoe UI",Roboto,sans-serif`; ctx.fillText(s,x,y);
+}
+function pulse(rMin,rMax,period){
+  const t=(performance.now()%period)/period;
+  const e=0.5-0.5*Math.cos(2*Math.PI*t);
+  const r=rMin+(rMax-rMin)*e;
+  const opa=Math.max(0,(255-((r-rMin)*(255-40))/30))/255;
+  return {r,opa};
+}
+
+// ── drive-view transform (rider pinned near the bottom; mirror ui.cpp) ──
+const RIDER_Y = 168, SCALE_EASE = 0.14;
+let vScale=1, scaleInit=false;
+function computeFit(){
+  let maxFwd=1, maxAbsX=1;                     // forward extent + lateral spread
+  const acc=(x,y)=>{ if(y>maxFwd)maxFwd=y; if(Math.abs(x)>maxAbsX)maxAbsX=Math.abs(x); };
+  for(const [x,y] of state.route) acc(x,y);
+  for(const rd of state.junctionRoads) for(const [x,y] of rd.coords) acc(x,y);
+  const vAvail=RIDER_Y-(MAP_Y0+MAP_PAD), hAvail=(MAP_X1-MAP_X0)/2-MAP_PAD;
+  const target=Math.min(vAvail/maxFwd, hAvail/maxAbsX, MAP_MAXSCALE);
+  if(!scaleInit){ vScale=target; scaleInit=true; }   // snap first frame
+  else vScale+=(target-vScale)*SCALE_EASE;            // then ease the zoom
+}
+function fitX(m){ return MAP_RCX+m*vScale; }   // rider origin → (MAP_RCX, RIDER_Y)
+function fitY(m){ return RIDER_Y-m*vScale; }
+function toPx(coords){ return coords.map(([x,y])=>[fitX(x),fitY(y)]); }
+
+// ── drawing primitives ──
+function strokePath(pts,width,col){
+  if(pts.length<2) return;
+  ctx.lineWidth=width; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.strokeStyle=col;
+  ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+  for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]); ctx.stroke();
+}
+function dot(x,y,r,col){ ctx.fillStyle=col; ctx.beginPath(); ctx.arc(x,y,r,0,2*Math.PI); ctx.fill(); }
+function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.roundRect(x,y,w,h,r); }
+
+// Google-Maps style heading-up navigation arrow (filled kite, pointing up).
+function navArrow(cx,cy){
+  const pl=pulse(10,24,1500);
+  ctx.globalAlpha=pl.opa; dot(cx,cy,pl.r,C_ACCENT); ctx.globalAlpha=1;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy-13); ctx.lineTo(cx+11, cy+10); ctx.lineTo(cx, cy+4); ctx.lineTo(cx-11, cy+10);
+  ctx.closePath();
+  ctx.fillStyle=C_ACCENT; ctx.fill();
+  ctx.lineWidth=2.5; ctx.lineJoin='round'; ctx.strokeStyle=C_TEXT; ctx.stroke();
+}
+
+function drawMap(){
+  computeFit();
+  // framed map panel
+  ctx.save();
+  roundRect(MAP_X0,MAP_Y0,MAP_X1-MAP_X0,MAP_Y1-MAP_Y0,14);
+  ctx.fillStyle=(()=>{ const g=ctx.createLinearGradient(0,MAP_Y0,0,MAP_Y1); g.addColorStop(0,C_MAPBG); g.addColorStop(1,C_MAPBG2); return g; })();
+  ctx.fill(); ctx.lineWidth=1; ctx.strokeStyle=C_MAPBRD; ctx.stroke();
+  ctx.clip();   // keep roads inside the panel
+  // junction context roads (casing + surface for depth)
+  for(const rd of state.junctionRoads){ const p=toPx(rd.coords); strokePath(p, GHOST_W+4, C_GHOSTC); }
+  for(const rd of state.junctionRoads){ const p=toPx(rd.coords); strokePath(p, GHOST_W,   C_GHOST);  }
+  // route polyline = the path to take: dim-brand casing under, brand over
+  const rp=toPx(state.route);
+  strokePath(rp, CASING_W, C_CASING);
+  strokePath(rp, ROUTE_W,  C_ROUTE);
+  // heading-up navigation arrow at the rider origin
+  navArrow(fitX(0), fitY(0));
+  ctx.restore();
+}
+
+// ── screens ──
+function drawProgressBar(pct){
+  ctx.fillStyle=C_SURF; ctx.fillRect(0,0,W,6);
+  ctx.fillStyle=C_ACCENT; ctx.fillRect(0,0,W*pct/100,6);
+}
+function drawNav(){
+  ctx.fillStyle=vGrad(C_BG,C_BG2); ctx.fillRect(0,0,W,H);
+  const pct=state.tripTotalDist>0?Math.max(0,Math.min(100,100*(state.tripTotalDist-state.navRemainingDist)/state.tripTotalDist)):0;
+  drawProgressBar(pct);
+  drawMap();
+  // left turn-info panel
+  text(arrowFor(state.navInstruction),36,46,C_ACCENT,40,'600','left');
+  text(fmtDist(state.navDistanceToTurn),14,100,C_TEXT,26,'600','left');
+  text(state.navInstruction,14,131,C_DIM,14,'600','left');
+  // footer
+  text(state.tripDestination,CX,212,C_TEXT,14);
+  text(fmtDist(state.navRemainingDist)+'  -  '+fmtTime(state.navRemainingTime),CX,231,C_ACCENT,20);
+}
+function drawHome(){
+  ctx.fillStyle=vGrad(C_BG,C_BG2); ctx.fillRect(0,0,W,H);
+  const hp=pulse(26,56,1800);
+  ctx.globalAlpha=hp.opa; dot(CX,CY-6,hp.r,C_ACCENT); ctx.globalAlpha=1;
+  text('◎',CX,CY-6,C_BG,46);
+  ctx.save(); ctx.letterSpacing='4px'; text('TRAKIO',CX,CY+58,C_TEXT,26); ctx.restore();
+  text('Ready to ride',CX,CY+84,C_DIM,14);
+}
+function drawDone(){ // full-screen arrival
+  ctx.fillStyle=vGrad('#0A2A22',C_BG); ctx.fillRect(0,0,W,H);
+  dot(CX,74,46,C_ACCENT);
+  text('✓',CX,74,'#06231A',40);
+  ctx.save(); ctx.letterSpacing='2px'; text('Arrived',CX,148,C_ACCENT,28); ctx.restore();
+  text(state.tripDestination,CX,184,C_TEXT,22);
+  text(fmtDist(state.tripTotalDist)+'  -  '+fmtTime(state.tripTotalDur),CX,226,C_DIM,14);
+}
+function drawToast(){ // floats on top of any screen
+  const x=12,y=10,w=W-24,h=56,r=14;
+  ctx.fillStyle=hGrad(C_CALL,C_CALL2);
+  roundRect(x,y,w,h,r); ctx.fill();
+  text('☎',x+22,y+h/2,C_TEXT,26);
+  text(state.caller,x+44,y+22,C_TEXT,22,'600','left');
+  text(state.number,x+44,y+40,'#FFD7DC',14,'400','left');
+}
+
+// ── demo motion: walk the master route so the arrow actually moves ──
+function posAt(d){ // distance d along masterRoute → {x,y,idx}
+  let acc=0;
+  for(let i=0;i<masterRoute.length-1;i++){
+    const a=masterRoute[i], b=masterRoute[i+1], seg=Math.hypot(b[0]-a[0],b[1]-a[1]);
+    if(acc+seg>=d){ const f=(d-acc)/seg; return {x:a[0]+(b[0]-a[0])*f, y:a[1]+(b[1]-a[1])*f, idx:i}; }
+    acc+=seg;
+  }
+  const last=masterRoute[masterRoute.length-1]; return {x:last[0],y:last[1],idx:masterRoute.length-1};
+}
+function tangentAt(P){ // direction of travel at P (master frame)
+  const i=Math.min(P.idx, masterRoute.length-2);
+  const a=masterRoute[i], b=masterRoute[i+1];
+  return [b[0]-a[0], b[1]-a[1]];
+}
+// Build ONE nav "packet": the heading-up (track-up) frame the phone would send
+// at distance d along the ride. Everything is translated to the rider and
+// rotated so the direction of travel points up — the arrow stays fixed up and
+// the map turns. This is exactly what toLocalXY(...) does on the phone.
+let emitAngle=0, angleInit=false;
+const HEADING_EASE=0.22;
+function buildPacket(d){
+  const P=posAt(d), [tx,ty]=tangentAt(P);
+  const al=Math.atan2(tx,ty);                 // target rotation → travel dir up
+  // Ease the rotation along the shortest arc so turns rotate smoothly.
+  if(!angleInit){ emitAngle=al; angleInit=true; }
+  else { let diff=(al-emitAngle)%(2*Math.PI);
+    if(diff<-Math.PI)diff+=2*Math.PI; if(diff>Math.PI)diff-=2*Math.PI;
+    emitAngle+=diff*HEADING_EASE; }
+  const ca=Math.cos(emitAngle), sa=Math.sin(emitAngle);
+  const tf=([x,y])=>{ const dx=x-P.x, dy=y-P.y; return [dx*ca - dy*sa, dx*sa + dy*ca]; };
+  // Only the road AHEAD (capped at LOOK_AHEAD) — like the phone. The traveled
+  // part is excluded, so it scrolls off the bottom and disappears behind you.
+  const LOOK_AHEAD=110;
+  const ahead=[[P.x,P.y]]; let acc=0, prev=[P.x,P.y];
+  for(let i=P.idx+1;i<masterRoute.length;i++){
+    const pt=masterRoute[i], seg=Math.hypot(pt[0]-prev[0],pt[1]-prev[1]);
+    if(acc+seg>=LOOK_AHEAD){ const f=(LOOK_AHEAD-acc)/seg;
+      ahead.push([prev[0]+(pt[0]-prev[0])*f, prev[1]+(pt[1]-prev[1])*f]); break; }
+    ahead.push(pt); acc+=seg; prev=pt;
+  }
+  state.route=ahead.map(tf);
+  state.junctionRoads=masterJunctions.map(c=>({highlighted:false, coords:c.map(tf)}));
+  const frac=Math.min(1,d/MASTER_LEN);
+  state.navRemainingDist=Math.round(state.tripTotalDist*(1-frac));
+  state.navRemainingTime=Math.round(state.tripTotalDur*(1-frac));
+  state.navDistanceToTurn=Math.max(0,Math.round(70-d));
+  state.navInstruction = d<70 ? 'RIGHT' : 'STRAIGHT';
+}
+buildPacket(0);   // initial heading-up frame for the static nav view
+
+// ── transitions + loop ──
+let shown=state.screen, fade=1;
+function setScreen(s){ if(s===state.screen) return; state.screen=s; fade=0;
+  document.querySelectorAll('.controls [data-s]').forEach(b=>b.classList.toggle('active',b.dataset.s===s)); }
+
+// rAF only renders (pulses/transitions). State changes ONLY when a packet
+// arrives — mirroring the device, where ui_update() redraws the latest frame.
+function frame(){
+  rescale();
+  if(shown!==state.screen){ if(fade<1){ fade=Math.min(1,fade+0.06);} else shown=state.screen; }
+  ctx.clearRect(0,0,W,H);
+  if(state.screen==='home') drawHome();
+  else if(state.screen==='done') drawDone();
+  else drawNav();
+  if(fade<1){ ctx.globalAlpha=1-fade; ctx.fillStyle=C_BG; ctx.fillRect(0,0,W,H); ctx.globalAlpha=1; if(fade>=1) shown=state.screen; }
+  if(state.callActive) drawToast();   // toast always rides on top
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ── Smooth frame stream: ~6.5 Hz eased frames, matching the phone emitter ──
+const PACKET_MS = 150, STEP_M = 1.8;   // ≈ 12 m/s, small deltas → seamless motion
+let demoTimer=null, progress=0;
+function stopDemo(btn){ clearInterval(demoTimer); demoTimer=null; btn.textContent='▶ Demo ride'; }
+
+// ── controls ──
+document.querySelectorAll('.controls [data-s]').forEach(b=> b.onclick=()=>setScreen(b.dataset.s));
+const callBtn=document.getElementById('call');
+callBtn.onclick=function(){ state.callActive=!state.callActive; this.classList.toggle('callon',state.callActive); };
+document.getElementById('demo').onclick=function(){
+  const btn=this;
+  if(demoTimer){ stopDemo(btn); return; }
+  progress=0; state.navArrived=false; angleInit=false; scaleInit=false;
+  setScreen('nav'); buildPacket(0);
+  btn.textContent='⏸ Stop demo';
+  demoTimer=setInterval(()=>{                // each tick = one BLE nav packet
+    progress+=STEP_M;
+    if(progress>=MASTER_LEN){ stopDemo(btn); state.navArrived=true; setScreen('done'); return; }
+    buildPacket(progress);
+  }, PACKET_MS);
+};
+</script>
+</body>
+</html>
