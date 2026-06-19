@@ -1068,8 +1068,14 @@ async function triggerReroute(lat, lng) {
       toast('Re-route failed — will retry');
       return;
     }
+    selectedOrigin = { lat, lng, name: 'Current location' };
+    placeMarker('origin', selectedOrigin, selectedOrigin.name);
     navStepIdx = 0;
     navArrived = false;
+    navAdvancing = false;
+    navPrevPos = { lat, lng };
+    document.getElementById('origin-input').value = selectedOrigin.name;
+    document.getElementById('origin-clear').classList.add('visible');
     updateHUD();
     // Restart the native streamer with the new route so the ESP follows it too.
     if (nativeBackgroundRideActive) {

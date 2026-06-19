@@ -169,6 +169,7 @@ class PiNavigationService : Service(), LocationListener {
         }
         Log.i(TAG, "ride START — ${routeSteps.size} steps, ${routeCoords.size} route points")
         reconnectAttempts = 0
+        resetBleRouteState()
         // On a re-route the link is already up, so push the refreshed trip
         // summary now (new totals); on first start it flushes after discovery.
         if (servicesReady) routeStartFrame?.let { sendFrame(it) }
@@ -390,6 +391,8 @@ class PiNavigationService : Service(), LocationListener {
         .put("totalDuration", json.optDouble("totalDuration", 0.0).roundToInt())
         .toString()
 
+      seedFromRouteOrigin(json.optJSONObject("origin"))
+
       routeSteps.isNotEmpty()
     } catch (e: Exception) {
       Log.e(TAG, "parseRoutePayload failed: ${e.message}")
@@ -459,6 +462,34 @@ class PiNavigationService : Service(), LocationListener {
 
   private fun stopLocationUpdates() {
     runCatching { locationManager?.removeUpdates(this) }
+  }
+
+  private fun seedFromRouteOrigin(origin: JSONObject?) {
+    if (origin == null) return
+
+    val lat = origin.optDouble("lat", Double.NaN)
+    val lng = origin.optDouble("lng", Double.NaN)
+    if (lat.isNaN() || lng.isNaN()) return
+
+    prevFixLat = lat
+    prevFixLng = lng
+    prevFixTimeMs = 0L
+    fixLat = lat
+    fixLng = lng
+    fixTimeMs = System.currentTimeMillis()
+    fixSpeed = 0.0
+    emitLat = lat
+    emitLng = lng
+    smoothInit = true
+  }
+
+  private fun resetBleRouteState() {
+    synchronized(writeQueue) {
+      writeQueue.clear()
+      pendingFrames.clear()
+      writing = false
+      writeSeq += 1
+    }
   }
 
   private fun stopNavigation(sendRouteEnd: Boolean) {
