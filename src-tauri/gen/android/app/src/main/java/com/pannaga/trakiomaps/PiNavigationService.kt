@@ -169,6 +169,9 @@ class PiNavigationService : Service(), LocationListener {
         }
         Log.i(TAG, "ride START — ${routeSteps.size} steps, ${routeCoords.size} route points")
         reconnectAttempts = 0
+        // On a re-route the link is already up, so push the refreshed trip
+        // summary now (new totals); on first start it flushes after discovery.
+        if (servicesReady) routeStartFrame?.let { sendFrame(it) }
         connectBle()
         registerPhoneStateReceiver()
         registerBtStateReceiver()
