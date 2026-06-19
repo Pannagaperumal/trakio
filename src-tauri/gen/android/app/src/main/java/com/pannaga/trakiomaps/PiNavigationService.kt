@@ -235,120 +235,23 @@ class PiNavigationService : Service(), LocationListener {
     step: RouteStep,
     distToEnd: Double,
   ): String {
-    val hRad = Math.toRadians(heading)
-    val route = JSONArray().put(JSONArray().put(0).put(0)) // origin = current position
-
-    if (routeCoords.isNotEmpty()) {
-      // Nearest route vertex to where we actually are.
-      var nearestIdx = 0
-      var nearestDist = Double.MAX_VALUE
-      for (i in routeCoords.indices) {
-        val d = haversine(lat, lng, routeCoords[i].lat, routeCoords[i].lng)
-        if (d < nearestDist) { nearestDist = d; nearestIdx = i }
-      }
-
-      // Walk forward, projecting vertices until the look-ahead window is full.
-      var acc = 0.0
-      var prevLat = lat
-      var prevLng = lng
-      var i = nearestIdx + 1
-      while (i < routeCoords.size && route.length() < MAX_ROUTE_POINTS) {
-        val v = routeCoords[i]
-        acc += haversine(prevLat, prevLng, v.lat, v.lng)
-        route.put(toLocalXY(v.lat, v.lng, lat, lng, hRad))
-        prevLat = v.lat; prevLng = v.lng
-        if (acc >= LOOK_AHEAD_METERS) break
-        i++
-      }
-    }
-
-    // Remaining distance = to current step end + all later steps.
-    var remDist = distToEnd
-    for (i in navStepIdx + 1 until routeSteps.size) remDist += routeSteps[i].distanceM
-    // Remaining time = unfinished fraction of current step + all later steps.
-    val curFrac = if (step.distanceM > 0) (distToEnd / step.distanceM).coerceIn(0.0, 1.0) else 0.0
-    var remTime = step.durationS * curFrac
-    for (i in navStepIdx + 1 until routeSteps.size) remTime += routeSteps[i].durationS
-
-    return JSONObject()
-      .put("type", "nav")
-      .put("heading", heading.roundToInt())
-      .put("distanceToTurn", distToEnd.roundToInt())
-      .put("instruction", simplifyInstruction(step.maneuver, step.instructions))
-      .put("route", route)
-      .put("remainingDistance", remDist.roundToInt())     // metres to destination
-      .put("remainingTime", remTime.roundToInt())         // seconds to destination
-      .put("eta", System.currentTimeMillis() + (remTime * 1000).toLong()) // epoch ms
-      .put("junctionRoads", buildLocalJunctionRoads(lat, lng, hRad, step))
-      .put("arrived", false)
-      .toString()
-  }
-
-  private fun buildLocalJunctionRoads(
-    lat: Double,
-    lng: Double,
-    headingRad: Double,
-    step: RouteStep,
-  ): JSONArray {
-    val junctionRoads = step.junctionRoads ?: return JSONArray()
-    val roads = JSONArray()
-
-    for (road in junctionRoads.roads) {
-      if (road.coords.size < 2) continue
-
-      val coords = JSONArray()
-      for (coord in road.coords.take(MAX_JUNCTION_ROAD_POINTS)) {
-        coords.put(toLocalXY(coord.lat, coord.lng, lat, lng, headingRad))
-      }
-
-      if (coords.length() < 2) continue
-
-      roads.put(
-        JSONObject()
-          .put("highlighted", road.id == junctionRoads.highlightedBranchId)
-          .put("coords", coords)
-      )
-    }
-
-    return roads
-  }
-
-  // Project (lat,lng) into the local heading-up metric frame centred on
-  // (lat0,lng0): +y = forward (travel direction), +x = right. Returns [x, y].
-  private fun toLocalXY(lat: Double, lng: Double, lat0: Double, lng0: Double, headingRad: Double): JSONArray {
-    val dNorth = (lat - lat0) * METERS_PER_DEG
-    val dEast = (lng - lng0) * METERS_PER_DEG * cos(Math.toRadians(lat0))
-    val s = Math.sin(headingRad)
-    val c = Math.cos(headingRad)
-    val forward = dEast * s + dNorth * c
-    val right = dEast * c - dNorth * s
-    return JSONArray().put(right.roundToInt()).put(forward.roundToInt())
-  }
-
-  private fun simplifyInstruction(maneuver: String?, instructions: String?): String {
-    val m = (maneuver ?: "").lowercase()
-    return when {
-      m.contains("uturn") || m.contains("u-turn") -> "UTURN"
-      m.contains("roundabout") || m.contains("rotary") -> "ROUNDABOUT"
-      m.contains("arrive") -> "ARRIVE"
-      m.contains("left") -> if (m.contains("slight")) "SLIGHT_LEFT" else if (m.contains("sharp")) "SHARP_LEFT" else "LEFT"
-      m.contains("right") -> if (m.contains("slight")) "SLIGHT_RIGHT" else if (m.contains("sharp")) "SHARP_RIGHT" else "RIGHT"
-      m.contains("straight") || m.contains("continue") || m.contains("depart") -> "STRAIGHT"
-      else -> {
-        val t = (instructions ?: "").lowercase()
-        when {
-          t.contains("left") -> "LEFT"
-          t.contains("right") -> "RIGHT"
-          else -> "STRAIGHT"
-        }
-      }
-    }
-  }
-
-  private fun haversine(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Double {
-    val results = FloatArray(1)
-    Location.distanceBetween(lat1, lng1, lat2, lng2, results)
-    return results[0].toDouble()
+    val remainingStepDistances = routeSteps.drop(navStepIdx + 1).map { it.distanceM }
+    val remainingStepDurations = routeSteps.drop(navStepIdx + 1).map { it.durationS }
+    return BleNavFrameBuilder.buildNavFrame(
+      lat = lat,
+      lng = lng,
+      heading = heading,
+      distToEnd = distToEnd,
+      step = step,
+      navStepIdx = navStepIdx,
+      routeCoords = routeCoords,
+      remainingStepDistances = remainingStepDistances,
+      remainingStepDurations = remainingStepDurations,
+      lookAheadMeters = LOOK_AHEAD_METERS,
+      maxRoutePoints = MAX_ROUTE_POINTS,
+      maxJunctionRoadPoints = MAX_JUNCTION_ROAD_POINTS,
+      nowMillis = System.currentTimeMillis(),
+    )
   }
 
   private fun parseRoutePayload(payload: String): Boolean {
@@ -408,60 +311,57 @@ class PiNavigationService : Service(), LocationListener {
       ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
       Log.w(TAG, "startLocationUpdates: location permission not granted")
       return
-
-      private fun parseJunctionRoads(json: JSONObject?): JunctionRoads? {
-        if (json == null) return null
-
-        return runCatching {
-          val roadsJson = json.optJSONArray("roads") ?: return null
-          val roads = buildList {
-            for (idx in 0 until roadsJson.length()) {
-              val road = roadsJson.optJSONObject(idx) ?: continue
-              val coordsJson = road.optJSONArray("coords") ?: continue
-              val coords = buildList {
-                for (coordIdx in 0 until coordsJson.length()) {
-                  val pair = coordsJson.optJSONArray(coordIdx) ?: continue
-                  if (pair.length() < 2) continue
-                  add(LatLng(lat = pair.optDouble(0, 0.0), lng = pair.optDouble(1, 0.0)))
-                }
-              }
-              if (coords.size < 2) continue
-
-              add(
-                JunctionRoad(
-                  id = road.optString("id", "road-$idx"),
-                  name = road.optString("name", "Unnamed road"),
-                  highway = road.optString("highway", ""),
-                  coords = coords,
-                )
-              )
-            }
-          }
-
-          if (roads.isEmpty()) return null
-          JunctionRoads(
-            highlightedBranchId = json.optString("highlighted_branch_id").ifBlank { null },
-            roads = roads,
-          )
-        }.getOrElse {
-          Log.w(TAG, "parseJunctionRoads: ignoring malformed payload")
-          null
-        }
-      }
     }
 
-      data class JunctionRoad(val id: String, val name: String, val highway: String, val coords: List<LatLng>)
-      data class JunctionRoads(val highlightedBranchId: String?, val roads: List<JunctionRoad>)
     val manager = locationManager ?: return
     runCatching {
       if (manager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
         manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 1f, this, Looper.getMainLooper())
       }
       if (manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-        val junctionRoads: JunctionRoads?,
         manager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1500L, 1f, this, Looper.getMainLooper())
       }
     }.onFailure { Log.w(TAG, "requestLocationUpdates failed: ${it.message}") }
+  }
+
+  private fun parseJunctionRoads(json: JSONObject?): JunctionRoads? {
+    if (json == null) return null
+
+    return runCatching {
+      val roadsJson = json.optJSONArray("roads") ?: return null
+      val roads = buildList {
+        for (idx in 0 until roadsJson.length()) {
+          val road = roadsJson.optJSONObject(idx) ?: continue
+          val coordsJson = road.optJSONArray("coords") ?: continue
+          val coords = buildList {
+            for (coordIdx in 0 until coordsJson.length()) {
+              val pair = coordsJson.optJSONArray(coordIdx) ?: continue
+              if (pair.length() < 2) continue
+              add(LatLng(lat = pair.optDouble(0, 0.0), lng = pair.optDouble(1, 0.0)))
+            }
+          }
+          if (coords.size < 2) continue
+
+          add(
+            JunctionRoad(
+              id = road.optString("id", "road-$idx"),
+              name = road.optString("name", "Unnamed road"),
+              highway = road.optString("highway", ""),
+              coords = coords,
+            )
+          )
+        }
+      }
+
+      if (roads.isEmpty()) return null
+      JunctionRoads(
+        highlightedBranchId = json.optString("highlighted_branch_id").ifBlank { null },
+        roads = roads,
+      )
+    }.getOrElse {
+      Log.w(TAG, "parseJunctionRoads: ignoring malformed payload")
+      null
+    }
   }
 
   private fun stopLocationUpdates() {
@@ -859,17 +759,149 @@ class PiNavigationService : Service(), LocationListener {
     .build()
 
   private fun distanceTo(location: Location, end: LatLng): Double {
-    val results = FloatArray(1)
-    Location.distanceBetween(location.latitude, location.longitude, end.lat, end.lng, results)
-    return results[0].toDouble()
+    return BleNavFrameBuilder.haversine(location.latitude, location.longitude, end.lat, end.lng)
   }
 
   data class LatLng(val lat: Double, val lng: Double)
+  data class JunctionRoad(val id: String, val name: String, val highway: String, val coords: List<LatLng>)
+  data class JunctionRoads(val highlightedBranchId: String?, val roads: List<JunctionRoad>)
   data class RouteStep(
     val instructions: String,
     val maneuver: String,
     val endLocation: LatLng,
     val distanceM: Double,
     val durationS: Double,
+    val junctionRoads: JunctionRoads?,
   )
+}
+
+internal object BleNavFrameBuilder {
+  fun buildNavFrame(
+    lat: Double,
+    lng: Double,
+    heading: Double,
+    distToEnd: Double,
+    step: PiNavigationService.RouteStep,
+    navStepIdx: Int,
+    routeCoords: List<PiNavigationService.LatLng>,
+    remainingStepDistances: List<Double>,
+    remainingStepDurations: List<Double>,
+    lookAheadMeters: Double,
+    maxRoutePoints: Int,
+    maxJunctionRoadPoints: Int,
+    nowMillis: Long,
+  ): String {
+    val hRad = Math.toRadians(heading)
+    val route = JSONArray().put(JSONArray().put(0).put(0))
+
+    if (routeCoords.isNotEmpty()) {
+      var nearestIdx = 0
+      var nearestDist = Double.MAX_VALUE
+      for (i in routeCoords.indices) {
+        val d = haversine(lat, lng, routeCoords[i].lat, routeCoords[i].lng)
+        if (d < nearestDist) {
+          nearestDist = d
+          nearestIdx = i
+        }
+      }
+
+      var acc = 0.0
+      var prevLat = lat
+      var prevLng = lng
+      var i = nearestIdx + 1
+      while (i < routeCoords.size && route.length() < maxRoutePoints) {
+        val v = routeCoords[i]
+        acc += haversine(prevLat, prevLng, v.lat, v.lng)
+        route.put(toLocalXY(v.lat, v.lng, lat, lng, hRad))
+        prevLat = v.lat
+        prevLng = v.lng
+        if (acc >= lookAheadMeters) break
+        i++
+      }
+    }
+
+    var remDist = distToEnd
+    for (distance in remainingStepDistances) remDist += distance
+    val curFrac = if (step.distanceM > 0) (distToEnd / step.distanceM).coerceIn(0.0, 1.0) else 0.0
+    var remTime = step.durationS * curFrac
+    for (duration in remainingStepDurations) remTime += duration
+
+    return JSONObject()
+      .put("type", "nav")
+      .put("heading", heading.roundToInt())
+      .put("distanceToTurn", distToEnd.roundToInt())
+      .put("instruction", simplifyInstruction(step.maneuver, step.instructions))
+      .put("route", route)
+      .put("remainingDistance", remDist.roundToInt())
+      .put("remainingTime", remTime.roundToInt())
+      .put("eta", nowMillis + (remTime * 1000).toLong())
+      .put("junctionRoads", buildLocalJunctionRoads(lat, lng, hRad, step, maxJunctionRoadPoints))
+      .put("arrived", false)
+      .toString()
+  }
+
+  fun haversine(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Double {
+    val results = FloatArray(1)
+    Location.distanceBetween(lat1, lng1, lat2, lng2, results)
+    return results[0].toDouble()
+  }
+
+  private fun buildLocalJunctionRoads(
+    lat: Double,
+    lng: Double,
+    headingRad: Double,
+    step: PiNavigationService.RouteStep,
+    maxJunctionRoadPoints: Int,
+  ): JSONArray {
+    val junctionRoads = step.junctionRoads ?: return JSONArray()
+    val roads = JSONArray()
+
+    for (road in junctionRoads.roads) {
+      if (road.coords.size < 2) continue
+
+      val coords = JSONArray()
+      for (coord in road.coords.take(maxJunctionRoadPoints)) {
+        coords.put(toLocalXY(coord.lat, coord.lng, lat, lng, headingRad))
+      }
+      if (coords.length() < 2) continue
+
+      roads.put(
+        JSONObject()
+          .put("highlighted", road.id == junctionRoads.highlightedBranchId)
+          .put("coords", coords)
+      )
+    }
+
+    return roads
+  }
+
+  private fun toLocalXY(lat: Double, lng: Double, lat0: Double, lng0: Double, headingRad: Double): JSONArray {
+    val dNorth = (lat - lat0) * 111320.0
+    val dEast = (lng - lng0) * 111320.0 * cos(Math.toRadians(lat0))
+    val s = Math.sin(headingRad)
+    val c = Math.cos(headingRad)
+    val forward = dEast * s + dNorth * c
+    val right = dEast * c - dNorth * s
+    return JSONArray().put(right.roundToInt()).put(forward.roundToInt())
+  }
+
+  private fun simplifyInstruction(maneuver: String?, instructions: String?): String {
+    val m = (maneuver ?: "").lowercase()
+    return when {
+      m.contains("uturn") || m.contains("u-turn") -> "UTURN"
+      m.contains("roundabout") || m.contains("rotary") -> "ROUNDABOUT"
+      m.contains("arrive") -> "ARRIVE"
+      m.contains("left") -> if (m.contains("slight")) "SLIGHT_LEFT" else if (m.contains("sharp")) "SHARP_LEFT" else "LEFT"
+      m.contains("right") -> if (m.contains("slight")) "SLIGHT_RIGHT" else if (m.contains("sharp")) "SHARP_RIGHT" else "RIGHT"
+      m.contains("straight") || m.contains("continue") || m.contains("depart") -> "STRAIGHT"
+      else -> {
+        val t = (instructions ?: "").lowercase()
+        when {
+          t.contains("left") -> "LEFT"
+          t.contains("right") -> "RIGHT"
+          else -> "STRAIGHT"
+        }
+      }
+    }
+  }
 }
