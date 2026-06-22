@@ -25,6 +25,9 @@ let navAnimFrame = null;     // rAF handle for dot interpolation
 let navArrived = false;      // guard so arrival fires only once
 let navAdvancing = false;    // guard against double-advance on same GPS fix
 let nativeBackgroundRideActive = false;
+let offRouteCount = 0;        // consecutive fixes measured off the route line
+let rerouting = false;        // a re-route request is in flight
+let lastRerouteAt = 0;        // timestamp of the last re-route (for cooldown)
 
 
 // ── Constants ─────────────────────────────────────────────
@@ -129,6 +132,62 @@ async function fetchDirections(origin, dest) {
     console.error('[directions] fetch error:', e);
     return null;
   }
+}
+
+// Parse a Directions response and apply it as the active route: draw the
+// polyline, update HUD totals + the steps list, and store everything the
+// navigation loop and native streamer need. Shared by Get Directions and the
+// re-router. `fit` re-frames the camera (off during an active ride). Returns
+// true on success.
+async function applyRouteData(data, { fit = true } = {}) {
+  const status = (data.status || '').toLowerCase();
+  if (status === 'zero_results') { toast('No route found between these locations'); return false; }
+  if (!data.routes?.length) {
+    toast(`Directions failed (${data.status || 'unknown error'}) — check your API key`);
+    return false;
+  }
+
+  const route = data.routes[0];
+  const leg = route.legs?.[0];
+  if (!leg) { toast('Empty route returned by API'); return false; }
+
+  // overview_polyline is a raw encoded string in trakio API
+  const polylineStr = typeof route.overview_polyline === 'string'
+    ? route.overview_polyline
+    : (route.overview_polyline?.points ?? '');
+  if (!polylineStr) { toast('No route geometry in response'); return false; }
+
+  const coords = decodePolyline(polylineStr);
+  navRouteCoords = coords.map(([lng, lat]) => [lat, lng]); // Leaflet [lat,lng]
+  drawRoute(coords);
+  if (fit) fitBounds(coords);
+
+  // trakio returns readable_duration / readable_distance strings
+  // and raw distance (meters) / duration (seconds) numbers
+  const distKm = leg.readable_distance
+    ? `${leg.readable_distance} km`
+    : leg.distance != null ? `${(leg.distance / 1000).toFixed(1)} km` : '—';
+  const durText = leg.readable_duration || formatSeconds(leg.duration) || '—';
+
+  document.getElementById('route-duration').textContent = durText;
+  document.getElementById('route-distance').textContent = distKm;
+  document.getElementById('route-info').classList.add('visible');
+
+  // Store steps for navigation
+  navSteps = await enrichStepsWithJunctionRoads(leg.steps || []);
+  navTotalDist = leg.distance || 0;
+  navTotalDur = leg.duration || 0;
+
+  const list = document.getElementById('steps-list');
+  list.innerHTML = '';
+  navSteps.forEach((step, i) => {
+    const li = document.createElement('li');
+    li.className = 'step-item';
+    const text = step.instructions || step.html_instructions || '';
+    li.innerHTML = `<span class="step-num">${i + 1}</span><span class="step-text">${text}</span>`;
+    list.appendChild(li);
+  });
+  return true;
 }
 
 function buildOverpassJunctionQuery(lat, lng) {
@@ -741,53 +800,7 @@ function setupDirections() {
       return;
     }
 
-    const status = (data.status || '').toLowerCase();
-    if (status === 'zero_results') { toast('No route found between these locations'); return; }
-    if (!data.routes?.length) {
-      toast(`Directions failed (${data.status || 'unknown error'}) — check your API key`);
-      return;
-    }
-
-    const route = data.routes[0];
-    const leg = route.legs?.[0];
-    if (!leg) { toast('Empty route returned by API'); return; }
-
-    // overview_polyline is a raw encoded string in trakio API
-    const polylineStr = typeof route.overview_polyline === 'string'
-      ? route.overview_polyline
-      : (route.overview_polyline?.points ?? '');
-    if (!polylineStr) { toast('No route geometry in response'); return; }
-
-    const coords = decodePolyline(polylineStr);
-    navRouteCoords = coords.map(([lng, lat]) => [lat, lng]); // Leaflet [lat,lng]
-    drawRoute(coords);
-    fitBounds(coords);
-
-    // trakio returns readable_duration / readable_distance strings
-    // and raw distance (meters) / duration (seconds) numbers
-    const distKm = leg.readable_distance
-      ? `${leg.readable_distance} km`
-      : leg.distance != null ? `${(leg.distance / 1000).toFixed(1)} km` : '—';
-    const durText = leg.readable_duration || formatSeconds(leg.duration) || '—';
-
-    document.getElementById('route-duration').textContent = durText;
-    document.getElementById('route-distance').textContent = distKm;
-    routeInfo.classList.add('visible');
-
-    // Store steps for navigation
-    navSteps = await enrichStepsWithJunctionRoads(leg.steps || []);
-    navTotalDist = leg.distance || 0;
-    navTotalDur = leg.duration || 0;
-
-    const list = document.getElementById('steps-list');
-    list.innerHTML = '';
-    navSteps.forEach((step, i) => {
-      const li = document.createElement('li');
-      li.className = 'step-item';
-      const text = step.instructions || step.html_instructions || '';
-      li.innerHTML = `<span class="step-num">${i + 1}</span><span class="step-text">${text}</span>`;
-      list.appendChild(li);
-    });
+    await applyRouteData(data, { fit: true });
   });
 
   // Steps toggle
@@ -981,7 +994,101 @@ const NAV_CONFIG = {
   watchTimeout: 15000,        // ms — GPS timeout per fix
   highAccuracy: true,         // request precise GPS
   easeMs: 500,                // camera ease animation duration
+  offRouteThreshold: 50,      // metres off the route line before counting as off-route
+  offRouteHits: 3,            // consecutive off-route fixes before re-routing
+  rerouteCooldownMs: 12000,   // min gap between automatic re-routes
 };
+
+// The route_start payload handed to the native foreground service. Built from
+// the current route state so it can be (re)sent on ride start AND after a
+// re-route to point the ESP streamer at the new route.
+function buildRouteStartPayload() {
+  return {
+    type: 'route_start',
+    origin: navPrevPos || selectedOrigin,
+    destination: selectedDest,
+    destinationName: selectedDest?.name || selectedDest?.formatted_address || 'Destination',
+    totalDistance: navTotalDist,   // metres
+    totalDuration: navTotalDur,    // seconds
+    routeCoords: navRouteCoords,
+    steps: navSteps.map(s => ({
+      instructions: s.instructions,
+      maneuver: s.maneuver || null,
+      end_location: s.end_location,
+      distance: s.distance,
+      duration: s.duration,
+      junction_roads: s.junction_roads || null,
+    })),
+  };
+}
+
+// ── Off-route detection + re-routing ──────────────────────
+// Ola Maps has no dedicated reroute endpoint — re-routing is a fresh Directions
+// request from the current position to the destination (the standard approach).
+function pointSegDistM(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+// Shortest distance (metres) from a point to the active route polyline.
+function distanceToRoute(lat, lng) {
+  if (navRouteCoords.length < 2) return 0;
+  const mPerLat = 111320;
+  const mPerLng = 111320 * Math.cos(lat * Math.PI / 180);
+  let min = Infinity;
+  for (let i = 1; i < navRouteCoords.length; i++) {
+    const a = navRouteCoords[i - 1], b = navRouteCoords[i];
+    const ax = (a[1] - lng) * mPerLng, ay = (a[0] - lat) * mPerLat;
+    const bx = (b[1] - lng) * mPerLng, by = (b[0] - lat) * mPerLat;
+    min = Math.min(min, pointSegDistM(0, 0, ax, ay, bx, by));
+  }
+  return min;
+}
+
+// Count consecutive off-route fixes; trigger a re-route once we're confidently
+// off the line (debounced to avoid GPS-jitter false positives + a cooldown).
+function maybeReroute(lat, lng) {
+  if (rerouting || navRouteCoords.length < 2 || !selectedDest) return;
+  if (Date.now() - lastRerouteAt < NAV_CONFIG.rerouteCooldownMs) return;
+  if (distanceToRoute(lat, lng) <= NAV_CONFIG.offRouteThreshold) { offRouteCount = 0; return; }
+  if (++offRouteCount >= NAV_CONFIG.offRouteHits) triggerReroute(lat, lng);
+}
+
+async function triggerReroute(lat, lng) {
+  rerouting = true;
+  offRouteCount = 0;
+  lastRerouteAt = Date.now();
+  toast('Off route — finding a new route…');
+  try {
+    const data = await fetchDirections({ lat, lng }, selectedDest);
+    if (!data || !(await applyRouteData(data, { fit: false }))) {
+      toast('Re-route failed — will retry');
+      return;
+    }
+    selectedOrigin = { lat, lng, name: 'Current location' };
+    placeMarker('origin', selectedOrigin, selectedOrigin.name);
+    navStepIdx = 0;
+    navArrived = false;
+    navAdvancing = false;
+    navPrevPos = { lat, lng };
+    document.getElementById('origin-input').value = selectedOrigin.name;
+    document.getElementById('origin-clear').classList.add('visible');
+    updateHUD();
+    // Restart the native streamer with the new route so the ESP follows it too.
+    if (nativeBackgroundRideActive) {
+      getNativeRideBridge()?.startBackgroundRide(JSON.stringify(buildRouteStartPayload()));
+    }
+    toast('Route updated');
+  } catch (e) {
+    console.error('[reroute]', e);
+    toast('Re-route error — will retry');
+  } finally {
+    rerouting = false;
+  }
+}
 
 // ── Start / End navigation ────────────────────────────────
 function startNavigation() {
@@ -991,6 +1098,9 @@ function startNavigation() {
   navStepIdx = 0;
   navArrived = false;
   navAdvancing = false;
+  offRouteCount = 0;
+  rerouting = false;
+  lastRerouteAt = 0;
   document.getElementById('nav-hud').classList.add('active');
   document.getElementById('app').classList.add('navigating');
   updateHUD();
@@ -1019,28 +1129,10 @@ function startNavigation() {
   // computes the compact nav frames, and streams them to the ESP32 over BLE —
   // so streaming keeps working with the screen off. The route geometry
   // (routeCoords) lets it build the local heading-up `route` polyline.
-  const routeStartPayload = {
-    type: 'route_start',
-    origin: selectedOrigin,
-    destination: selectedDest,
-    destinationName: selectedDest?.name || selectedDest?.formatted_address || 'Destination',
-    totalDistance: navTotalDist,   // metres
-    totalDuration: navTotalDur,    // seconds
-    routeCoords: navRouteCoords,
-    steps: navSteps.map(s => ({
-      instructions: s.instructions,
-      maneuver: s.maneuver || null,
-      end_location: s.end_location,
-      distance: s.distance,
-      duration: s.duration,
-      junction_roads: s.junction_roads || null,
-    })),
-  };
-
   const nativeRideBridge = getNativeRideBridge();
   nativeBackgroundRideActive = Boolean(nativeRideBridge);
   if (nativeBackgroundRideActive) {
-    nativeRideBridge.startBackgroundRide(JSON.stringify(routeStartPayload));
+    nativeRideBridge.startBackgroundRide(JSON.stringify(buildRouteStartPayload()));
   }
 
   navWatchId = navigator.geolocation.watchPosition(
@@ -1099,6 +1191,9 @@ function startNavigation() {
           setTimeout(endNavigation, 3000);
         }
       }
+
+      // Off-route detection → automatic re-route from the current position.
+      if (!navArrived) maybeReroute(lat, lng);
 
       if (!nativeBackgroundRideActive) {
         sendPiPayload({

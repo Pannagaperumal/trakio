@@ -42,6 +42,7 @@
 #define MAP_RCY    ((MAP_Y0 + MAP_Y1) / 2)   // region centre y
 #define MAP_PAD    16    // padding inside the panel, pixels
 #define MAP_MAXSCALE 4.0f  // px per metre cap (don't over-zoom tiny content)
+#define RIDER_Y    168   // rider's fixed screen y inside the map panel (drive-view)
 
 #define CASING_W   16   // road casing thickness (under the route)
 #define ROUTE_W    9    // route line thickness
@@ -408,11 +409,23 @@ static void showScreen(int s) {
 }
 
 // Show/hide the floating call toast independently of the active screen.
+// Auto-dismiss after a timeout so a missed "call_end" frame can't leave the
+// toast covering the map forever.
+#define CALL_TOAST_TIMEOUT_MS 25000
 static void updateToast(void) {
+  static uint32_t callShownAt = 0;
+  static bool     wasActive   = false;
+
+  if (callActive && !wasActive) callShownAt = lv_tick_get();   // rising edge
+  if (callActive && lv_tick_elaps(callShownAt) > CALL_TOAST_TIMEOUT_MS)
+    callActive = false;
+  wasActive = callActive;
+
   if (callActive) {
     lv_label_set_text(lblToastCaller, callCaller.c_str());
     lv_label_set_text(lblToastNumber, callNumber.c_str());
     lv_obj_clear_flag(toast, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(toast);   // keep it above the active screen
   } else {
     lv_obj_add_flag(toast, LV_OBJ_FLAG_HIDDEN);
   }
@@ -422,7 +435,8 @@ static void updateToast(void) {
 // The rider is pinned near the BOTTOM of the map panel; the road ahead fills
 // the space above. The traveled road is not in the packet, so as you advance
 // it scrolls down and off the bottom — disappearing behind you.
-#define RIDER_Y     168        // rider's fixed screen y inside the map panel
+// (RIDER_Y is defined with the map-geometry constants near the top of the file
+//  because buildNav() references it before this point.)
 #define SCALE_EASE  0.14f      // per-render zoom easing toward target (0..1)
 static float vScale = 1.0f;    // current px per metre (eased)
 static bool  scaleInit = false;
@@ -455,8 +469,19 @@ static void computeFit(void) {
 }
 
 // Rider origin [0,0] maps to (MAP_RCX, RIDER_Y); +forward = up, +x = right.
-static inline lv_coord_t fitX(int m) { return (lv_coord_t)(MAP_RCX + m * vScale); }
-static inline lv_coord_t fitY(int m) { return (lv_coord_t)(RIDER_Y - m * vScale); }
+// Every point is clamped to stay INSIDE the map panel (inset by the line
+// half-thickness) so nothing — including line width — spills out of the box.
+// Clamping points keeps whole segments inside because the panel is a rectangle.
+#define MAP_INSET 10   // >= half the thickest line (casing) so width stays inside
+static inline lv_coord_t clampi(lv_coord_t v, lv_coord_t lo, lv_coord_t hi) {
+  return v < lo ? lo : (v > hi ? hi : v);
+}
+static inline lv_coord_t fitX(int m) {
+  return clampi((lv_coord_t)(MAP_RCX + m * vScale), MAP_X0 + MAP_INSET, MAP_X1 - MAP_INSET);
+}
+static inline lv_coord_t fitY(int m) {
+  return clampi((lv_coord_t)(RIDER_Y - m * vScale), MAP_Y0 + MAP_INSET, MAP_Y1 - MAP_INSET);
+}
 
 // Build a heading-up navigation-arrow kite centred at (cx,cy), pointing up.
 static void buildRiderArrow(lv_coord_t cx, lv_coord_t cy) {
