@@ -1,0 +1,18 @@
+#ifndef LV_CONF_H
+#define LV_CONF_H
+
+#define LV_COLOR_DEPTH 16
+#define LV_COLOR_16_SWAP 0
+#define LV_MEM_SIZE (64U * 1024U)
+#define LV_DPI_DEF 130
+
+#define LV_FONT_MONTSERRAT_14 1
+#define LV_FONT_MONTSERRAT_22 1
+#define LV_FONT_MONTSERRAT_28 1
+#define LV_FONT_MONTSERRAT_40 1
+
+#define LV_USE_BAR 1
+#define LV_USE_LINE 1
+#define LV_USE_ANIMATION 1
+
+#endif
