@@ -2,8 +2,6 @@
 
 > An ESP32-powered motorcycle navigation device built to recreate the core experience of premium rider navigation systems using affordable hardware.
 
-![Trakio Hero Image](./images/hero.jpg)
-
 ## Overview
 
 Trakio started with a simple question:
@@ -45,23 +43,6 @@ Trakio aims to solve these problems by providing a dedicated rider-focused navig
 * 🔧 Modular and extensible architecture
 
 ---
-
-## Demo
-
-### Device
-
-![Device](./images/device.jpg)
-
-### Navigation Screen
-
-![Navigation UI](./images/navigation-ui.jpg)
-
-### Mounted on Motorcycle
-
-![Mounted Device](./images/mounted.jpg)
-
----
-
 ## Architecture
 
 ```text
