@@ -1,98 +1,198 @@
-# trakio
+# Trakio 🏍️
 
-trakio is a lightweight Tauri desktop map app built with Vite, vanilla JavaScript, and the `olamaps-web-sdk`.
+> An ESP32-powered motorcycle navigation device built to recreate the core experience of premium rider navigation systems using affordable hardware.
 
-It enables place search, route planning, and turn-by-turn navigation using the Ola Maps API. The UI includes a searchable sidebar, directions panel, transport mode selection, map markers, route playback, and support for a bike-mounted tripper IoT direction display.
+![Trakio Hero Image](./images/hero.jpg)
+
+## Overview
+
+Trakio started with a simple question:
+
+**Can a dedicated motorcycle navigation device be built using low-cost hardware while delivering the same core functionality as premium navigation systems?**
+
+Most riders rely on smartphones for navigation. While convenient, phones are not designed specifically for riding and often suffer from poor visibility, battery drain, vibration exposure, and weather-related issues.
+
+Trakio is a purpose-built navigation device powered by an ESP32 and a square display that provides turn-by-turn navigation in a compact and affordable form factor.
+
+The project explores embedded systems, hardware-software integration, UI design, and rapid product prototyping.
+
+---
+
+## Problem
+
+Motorcycle riders commonly use smartphones for navigation.
+
+This introduces several challenges:
+
+* Difficult to glance at while riding
+* High battery consumption
+* Exposure to vibration and weather
+* Distracting user interfaces
+* Expensive dedicated navigation systems
+
+Trakio aims to solve these problems by providing a dedicated rider-focused navigation display.
+
+---
 
 ## Features
 
-- Search for addresses and places with autocomplete
-- Set origin and destination for directions
-- Choose transport mode: driving, bike, auto, walking, cycling
-- Display route distance and duration
-- Show step-by-step navigation instructions
-- Sync navigation cues to a connected bike IoT tripper display
-- Save and reuse an Ola Maps API key locally
-- Responsive desktop layout powered by Tauri
+* 🧭 Turn-by-turn navigation
+* ⚡ ESP32-powered embedded platform
+* 📱 Compact square display
+* 🏍️ Rider-friendly interface
+* 🔋 Low-power operation
+* 📡 Real-time navigation updates
+* 🔧 Modular and extensible architecture
 
-## Getting Started
+---
 
-### Prerequisites
+## Demo
 
-- Node.js 18+ / npm
-- Rust toolchain (for Tauri)
-- Tauri CLI installed globally (`cargo install tauri-cli`)
+### Device
 
-### Install dependencies
+![Device](./images/device.jpg)
 
-```bash
-npm install
+### Navigation Screen
+
+![Navigation UI](./images/navigation-ui.jpg)
+
+### Mounted on Motorcycle
+
+![Mounted Device](./images/mounted.jpg)
+
+---
+
+## Architecture
+
+```text
++---------------------+
+| Navigation Source   |
++----------+----------+
+           |
+           v
++---------------------+
+| Communication Layer |
++----------+----------+
+           |
+           v
++---------------------+
+|       ESP32         |
++----------+----------+
+           |
+           v
++---------------------+
+| Display Renderer    |
++----------+----------+
+           |
+           v
++---------------------+
+| Rider Navigation UI |
++---------------------+
 ```
 
-### Development
+---
 
-Run the frontend and Tauri dev environment:
+## Tech Stack
 
-```bash
-npm run tauri dev
+### Hardware
+
+* ESP32
+* Square TFT Display
+* Power Management Circuit
+* Motorcycle Mounting System
+
+### Software
+
+* C++
+* Arduino Framework / ESP-IDF
+* Display Drivers
+* Navigation Rendering Logic
+
+---
+
+## Engineering Challenges
+
+### Display Constraints
+
+Designing a navigation UI that remains readable on a small square display while riding.
+
+### Real-Time Rendering
+
+Efficiently rendering navigation information on resource-constrained hardware.
+
+### Embedded Optimization
+
+Balancing performance, responsiveness, and memory consumption on the ESP32.
+
+### User Experience
+
+Ensuring navigation information can be understood within a quick glance.
+
+---
+
+## Example Workflow
+
+```text
+Route Selected
+      ↓
+Navigation Data Received
+      ↓
+ESP32 Processes Instructions
+      ↓
+Display Updates Navigation UI
+      ↓
+Rider Receives Turn Guidance
 ```
 
-### Build
+---
 
-```bash
-npm run tauri build
-```
+## Design Tradeoffs
 
-## Configuration
+| Decision            | Benefit                   | Tradeoff               |
+| ------------------- | ------------------------- | ---------------------- |
+| ESP32               | Affordable and accessible | Limited resources      |
+| Dedicated Display   | Better riding experience  | Additional hardware    |
+| Compact Form Factor | Easy mounting             | Limited screen space   |
+| Low-Cost Components | Affordable build          | Fewer premium features |
 
-trakio requires an Ola Maps API key.
+---
 
-1. Launch the app
-2. Paste your API key into the sidebar footer
-3. Save the key to enable search, place details, and routing
+## Why This Project Matters
 
-If you need an API key, obtain one from the Ola Maps service or your app provider.
+Trakio was not built simply as a hobby gadget.
 
-## Project Structure
+It was built to understand how real-world products are engineered from concept to prototype.
 
-- `src/index.html` — app shell and layout
-- `src/styles.css` — app styling
-- `src/main.js` — map logic, search, directions, and navigation
-- `src-tauri/tauri.conf.json` — Tauri desktop configuration
+The project combines:
 
-## NPM Scripts
+* Product Thinking
+* Embedded Systems
+* Hardware Integration
+* User Experience Design
+  
+and demonstrates the ability to transform an idea into a working solution.
 
-- `npm run dev` — start Vite development server
-- `npm run build` — build frontend assets
-- `npm run preview` — preview production build
-- `npm run tauri` — run Tauri CLI
+---
 
-## Notes
+## Future Roadmap
 
-- The app uses a proxy during development to avoid CORS issues.
-- In production, Tauri bundles the app as a native desktop application.
+* [ ] Offline maps
+* [ ] Ride analytics
+* [ ] OTA firmware updates
+* [ ] Open-source hardware design
 
-## Pi Wi-Fi Provisioning Flow
+---
 
-trakio now includes a one-time Pi Wi-Fi provisioning flow that skips Bluetooth discovery in the app:
+## Lessons Learned
 
-1. On the Pi, run `pi-display/start-pairing.sh` to show the controller MAC as a QR.
-2. Start `pi-display/ble_wifi.sh` on the Pi so RFCOMM channel 1 is ready to receive credentials.
-3. In the Tauri app, open the Directions tab, scan or upload the Pi QR, then send `SSID_password` from the new Pi Bluetooth Pairing card.
-4. The Pi script reads the payload, saves the Wi-Fi profile through `nmcli`, and later reconnects on that saved Wi-Fi without Bluetooth.
+Building Trakio reinforced an important engineering principle:
 
-### Pi prerequisites
+> Technologies are tools. The real challenge is identifying a problem, designing a solution, and shipping a working product.
 
-- `bluez`
-- `network-manager`
-- `qrencode` for local QR rendering
+---
 
-### Linux app host prerequisites
+## Author
 
-- `bluetoothctl`
-- `rfcomm`
-- Rust/Tauri system packages, including `pkg-config` and `libdbus-1-dev` when building on Linux
+**Pannaga Perumal**
 
-## License
-
-This project is currently unlicensed.
+*"I learn by building products, not just projects."*
