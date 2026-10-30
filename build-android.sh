@@ -14,6 +14,7 @@
 #   ./build-android.sh --apk          # signed release APK only
 #   ./build-android.sh --aab          # signed release AAB only (for Play Store)
 #   ./build-android.sh --debug        # unsigned debug APK (no keystore needed)
+#   ./build-android.sh --apk --arm64  # signed release APK for 64-bit ARM phones only (smallest)
 #   ./build-android.sh --clean        # wipe gradle build outputs first
 #
 # Config (override via env or a .env.android file next to this script):
@@ -70,6 +71,7 @@ KEY_DNAME="${KEY_DNAME:-CN=Trakio,O=Pannaga,C=IN}"
 # ----------------------------------------------------------------------------
 BUILD_MODE="release"     # release | debug
 TARGETS=()               # extra flags passed to tauri android build
+RUST_TARGETS=(aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android)
 DO_CLEAN=0
 
 while [ $# -gt 0 ]; do
@@ -77,6 +79,8 @@ while [ $# -gt 0 ]; do
     --apk)   TARGETS+=("--apk") ;;
     --aab)   TARGETS+=("--aab") ;;
     --debug) BUILD_MODE="debug" ;;
+    # Real phones are arm64; the other ABIs only serve old 32-bit devices and emulators.
+    --arm64) TARGETS+=("--target" "aarch64"); RUST_TARGETS=(aarch64-linux-android) ;;
     --clean) DO_CLEAN=1 ;;
     -h|--help)
       grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -30
@@ -108,7 +112,7 @@ command -v npm >/dev/null         || die "npm not found"
 
 # Ensure rust android targets are present
 if command -v rustup >/dev/null 2>&1; then
-  for t in aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android; do
+  for t in "${RUST_TARGETS[@]}"; do
     if ! rustup target list --installed 2>/dev/null | grep -q "^$t$"; then
       log "Installing rust target $t"
       rustup target add "$t"
