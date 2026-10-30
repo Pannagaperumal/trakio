@@ -53,6 +53,14 @@ class DeviceFramesTest {
   }
 
   @Test
+  fun timeFrameIsPinnedToIst() {
+    val json = JSONObject(DeviceFrames.time(1_700_000_000_000L))
+    assertEquals("time", json.getString("type"))
+    assertEquals(1_700_000_000_000L, json.getLong("epoch"))
+    assertEquals(330, json.getInt("tz"))
+  }
+
+  @Test
   fun lineReaderReassemblesSplitFrames() {
     val reader = DeviceFrames.LineReader()
     assertTrue(reader.feed("{\"type\":\"batt".toByteArray()).isEmpty())

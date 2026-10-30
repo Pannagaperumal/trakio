@@ -19,6 +19,13 @@ internal object DeviceFrames {
       .toString()
   }
 
+  // Device clock: UTC epoch plus the display offset. Trakio shows Indian
+  // Standard Time (UTC+5:30, no DST) regardless of the phone's zone.
+  const val IST_OFFSET_MIN = 330
+
+  fun time(nowMs: Long): String =
+    JSONObject().put("type", "time").put("epoch", nowMs).put("tz", IST_OFFSET_MIN).toString()
+
   fun callState(active: Boolean): String =
     JSONObject().put("type", "call_state").put("state", if (active) "active" else "ended").toString()
 

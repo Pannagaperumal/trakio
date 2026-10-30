@@ -115,6 +115,7 @@ class PiNavigationService : Service(), LocationListener {
     private const val AREA_EDGE_MARGIN_M = 250.0  // re-anchor this close to the edge
     private const val AREA_AHEAD_M = 300.0        // new anchor sits ahead of the rider
     private const val THEME_CHECK_MS = 60_000L
+    private const val TIME_SYNC_MS = 60 * 60_000L    // keeps the device clock from drifting
 
     private const val REQUESTED_MTU = 247
     private const val RECONNECT_BASE_DELAY_MS = 2000L
@@ -186,8 +187,16 @@ class PiNavigationService : Service(), LocationListener {
     override fun run() {
       if (!linkWanted) return
       refreshTheme()
+      if (SystemClock.elapsedRealtime() - lastTimeSyncAt >= TIME_SYNC_MS) sendTime()
       mainHandler.postDelayed(this, THEME_CHECK_MS)
     }
+  }
+  private var lastTimeSyncAt = 0L
+
+  private fun sendTime() {
+    if (!servicesReady) return
+    lastTimeSyncAt = SystemClock.elapsedRealtime()
+    enqueueChunks(DeviceFrames.time(System.currentTimeMillis()))
   }
 
   // ── BLE state (touched from both the main thread and GATT callback thread) ──
@@ -1025,6 +1034,8 @@ class PiNavigationService : Service(), LocationListener {
     DeviceStatus.connected = true
     Log.i(TAG, "link ready (mode=${DeviceStatus.mode}) — streaming will begin")
     applyConnectionPriority()
+    // Clock first: the device stamps ETA and its home clock in IST from it.
+    sendTime()
     if (navActive) routeStartFrame?.let { enqueueChunks(it) }
     themeFrame?.let { enqueueChunks(it) }
     if (navActive) currentArea?.let { enqueueChunks(it.frame) }
