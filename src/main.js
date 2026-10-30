@@ -30,6 +30,7 @@ let rerouting = false;        // a re-route request is in flight
 let lastRerouteAt = 0;        // timestamp of the last re-route (for cooldown)
 let navCorridorRoads = [];    // nearby streets along the route, for device map_area frames
 let corridorToken = 0;        // ignores corridor fetches for a superseded route
+let junctionToken = 0;        // same, for background junction enrichment
 
 
 // ── Constants ─────────────────────────────────────────────
@@ -198,8 +199,14 @@ async function applyRouteData(data, { fit = true } = {}) {
   // Corridor loads in the background; it must not hold up the route display.
   loadRouteCorridor(navRouteCoords);
 
-  // Store steps for navigation
-  navSteps = await enrichStepsWithJunctionRoads(leg.steps || []);
+  // Steps are usable straight away. Junction shapes (only the CrowPanel draws
+  // them) load in the background, so a busy Overpass never blocks Start Ride.
+  navSteps = leg.steps || [];
+  const token = ++junctionToken;
+  enrichStepsWithJunctionRoads(navSteps).then(enriched => {
+    if (token !== junctionToken) return;
+    enriched.forEach((step, i) => { if (step.junction_roads && navSteps[i]) navSteps[i].junction_roads = step.junction_roads; });
+  });
   navTotalDist = leg.distance || 0;
   navTotalDur = leg.duration || 0;
 
