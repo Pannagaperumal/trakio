@@ -29,3 +29,18 @@ keystore.properties
 *.njsproj
 *.sln
 *.sw?
+
+# Secrets — API keys / OAuth client secret
+.env
+.env.*
+!.env.example
+
+# Find Hub tracker key (GoogleFindMyTools)
+pi-display/trakio_crowpanel/fmdn_key.h
+
+# PlatformIO build output and downloaded libraries
+.pio/
+
+# Generated launch video (/brag)
+brag-output/
+brag.mp4
