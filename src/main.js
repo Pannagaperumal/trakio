@@ -38,19 +38,30 @@ let corridorToken = 0;        // ignores corridor fetches for a superseded route
 const API = window.__TAURI_INTERNALS__ != null
   ? 'https://api.olamaps.io'
   : '/ola-api';
-const OVERPASS_API = 'https://overpass-api.de/api/interpreter';
+// Main instance first, then a mirror. The public servers are often busy, so
+// every request retries with backoff and at most two run at once (the
+// per-client slot limit on overpass-api.de).
+const OVERPASS_ENDPOINTS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+];
+const OVERPASS_MAX_CONCURRENT = 2;
+const OVERPASS_TIMEOUT_MS = 90000;
 const JUNCTION_QUERY_RADIUS_METERS = 15;
 const JUNCTION_BRANCH_LENGTH_METERS = 35;
 const junctionRoadCache = new Map();
 
 // Road corridor along the whole route, fetched once per route. The native
 // service slices it into ~1.2 km map_area frames for the device.
-const CORRIDOR_MAJOR_RADIUS_M = 350;
-const CORRIDOR_MINOR_RADIUS_M = 150;
-const CORRIDOR_SAMPLE_M = 120;      // polyline vertex spacing in the query
-const CORRIDOR_MAX_SAMPLES = 400;   // keeps the Overpass query a sane size
+// Fetched as a union of small bounding boxes along the route: plain bbox
+// lookups are cheap for Overpass, unlike around:<polyline>, which times out
+// on the public servers.
+const CORRIDOR_MARGIN_M = 350;      // streets this far either side of the route
+const CORRIDOR_SAMPLE_M = 120;      // route sampling step when picking cells
+const CORRIDOR_CELL_DEG = 0.01;     // ~1.1 km grid cells
+const CORRIDOR_MAX_CELLS = 150;     // ~50 km of route; beyond that only the start
 const CORRIDOR_MAJOR_HIGHWAYS = '^(motorway|trunk|primary|secondary)(_link)?$';
-const CORRIDOR_MINOR_HIGHWAYS = '^(tertiary|tertiary_link|unclassified|residential|living_street)$';
+const CORRIDOR_HIGHWAYS = '^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street)(_link)?$';
 
 const STYLES = {
   dark: 'https://api.olamaps.io/tiles/vector/v1/styles/default-dark-standard/style.json',
@@ -399,14 +410,7 @@ async function fetchJunctionRoadsForStep(step, index, steps) {
 
   if (!baseData) {
     try {
-      const response = await fetch(OVERPASS_API, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-        body: `data=${encodeURIComponent(buildOverpassJunctionQuery(junction.lat, junction.lng))}`,
-      });
-      if (!response.ok) throw new Error(`Overpass returned ${response.status}`);
-
-      const data = await response.json();
+      const data = await overpassQuery(buildOverpassJunctionQuery(junction.lat, junction.lng), { attempts: 2, timeoutMs: 20000 });
       baseData = parseJunctionRoads(data.elements, junction.lat, junction.lng);
       junctionRoadCache.set(cacheKey, baseData);
     } catch (error) {
@@ -444,31 +448,99 @@ async function enrichStepsWithJunctionRoads(steps) {
   }
 }
 
-// ── Route corridor (streets near the route, for the device map) ──
-function sampleRouteForCorridor(coords) {
-  if (coords.length < 2) return coords;
-  let total = 0;
-  for (let i = 1; i < coords.length; i++) {
-    total += haversine(coords[i - 1][0], coords[i - 1][1], coords[i][0], coords[i][1]);
+// ── Overpass: shared queue + retries ──
+let overpassActive = 0;
+const overpassWaiting = [];
+
+async function withOverpassSlot(fn) {
+  if (overpassActive >= OVERPASS_MAX_CONCURRENT) await new Promise(resolve => overpassWaiting.push(resolve));
+  overpassActive++;
+  try { return await fn(); }
+  finally {
+    overpassActive--;
+    overpassWaiting.shift()?.();
   }
-  const spacing = Math.max(CORRIDOR_SAMPLE_M, total / CORRIDOR_MAX_SAMPLES);
-  const out = [coords[0]];
-  let acc = 0;
-  for (let i = 1; i < coords.length; i++) {
-    acc += haversine(coords[i - 1][0], coords[i - 1][1], coords[i][0], coords[i][1]);
-    if (acc >= spacing) { out.push(coords[i]); acc = 0; }
-  }
-  const last = coords[coords.length - 1];
-  if (out[out.length - 1] !== last) out.push(last);
-  return out;
 }
 
-function buildCorridorQuery(samples) {
-  const line = samples.map(([lat, lng]) => `${lat.toFixed(5)},${lng.toFixed(5)}`).join(',');
-  return `[out:json][timeout:60];
+// POST a query, rotating endpoints with backoff on busy/timeout errors.
+async function overpassQuery(query, { attempts = 4, timeoutMs = OVERPASS_TIMEOUT_MS } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt) await new Promise(r => setTimeout(r, [0, 2000, 5000, 10000][Math.min(attempt, 3)]));
+    const endpoint = OVERPASS_ENDPOINTS[attempt % OVERPASS_ENDPOINTS.length];
+    try {
+      return await withOverpassSlot(async () => {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+        try {
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+            body: `data=${encodeURIComponent(query)}`,
+            signal: ctrl.signal,
+          });
+          if (!response.ok) throw new Error(`Overpass ${response.status}`);
+          const data = await response.json();
+          // Overpass reports server-side timeouts as a 200 with a remark.
+          if (data.remark && /runtime error|timed out|out of memory/i.test(data.remark)) throw new Error(data.remark);
+          return data;
+        } finally {
+          clearTimeout(timer);
+        }
+      });
+    } catch (error) {
+      lastError = error;
+      console.warn(`[overpass] attempt ${attempt + 1}/${attempts} on ${endpoint} failed`, error);
+    }
+  }
+  throw lastError;
+}
+
+// ── Route corridor (streets near the route, for the device map) ──
+// Grid cells within CORRIDOR_MARGIN_M of the route, merged into row runs.
+function corridorBoxes(coords) {
+  const cells = new Set();
+  const addAround = (lat, lng) => {
+    const dLat = CORRIDOR_MARGIN_M / 111320;
+    const dLng = CORRIDOR_MARGIN_M / (111320 * Math.cos(lat * Math.PI / 180));
+    for (let r = Math.floor((lat - dLat) / CORRIDOR_CELL_DEG); r <= Math.floor((lat + dLat) / CORRIDOR_CELL_DEG); r++) {
+      for (let c = Math.floor((lng - dLng) / CORRIDOR_CELL_DEG); c <= Math.floor((lng + dLng) / CORRIDOR_CELL_DEG); c++) {
+        cells.add(`${r},${c}`);
+      }
+    }
+  };
+  addAround(coords[0][0], coords[0][1]);
+  for (let i = 1; i < coords.length && cells.size < CORRIDOR_MAX_CELLS; i++) {
+    const [aLat, aLng] = coords[i - 1], [bLat, bLng] = coords[i];
+    const steps = Math.max(1, Math.ceil(haversine(aLat, aLng, bLat, bLng) / CORRIDOR_SAMPLE_M));
+    for (let k = 1; k <= steps; k++) addAround(aLat + (bLat - aLat) * k / steps, aLng + (bLng - aLng) * k / steps);
+  }
+
+  const rows = new Map();
+  for (const key of cells) {
+    const [r, c] = key.split(',').map(Number);
+    if (!rows.has(r)) rows.set(r, []);
+    rows.get(r).push(c);
+  }
+  const boxes = [];
+  for (const [r, cols] of rows) {
+    cols.sort((a, b) => a - b);
+    let start = cols[0];
+    for (let i = 1; i <= cols.length; i++) {
+      if (i < cols.length && cols[i] === cols[i - 1] + 1) continue;
+      const d = CORRIDOR_CELL_DEG;
+      boxes.push([r * d, start * d, (r + 1) * d, (cols[i - 1] + 1) * d].map(v => +v.toFixed(5)));
+      start = cols[i];
+    }
+  }
+  return boxes;
+}
+
+function buildCorridorQuery(boxes) {
+  const parts = boxes.map(([s, w, n, e]) => `  way[highway~"${CORRIDOR_HIGHWAYS}"](${s},${w},${n},${e});`).join('\n');
+  return `[out:json][timeout:90];
 (
-  way(around:${CORRIDOR_MAJOR_RADIUS_M},${line})[highway~"${CORRIDOR_MAJOR_HIGHWAYS}"];
-  way(around:${CORRIDOR_MINOR_RADIUS_M},${line})[highway~"${CORRIDOR_MINOR_HIGHWAYS}"];
+${parts}
 );
 out geom qt;`;
 }
@@ -490,19 +562,16 @@ async function loadRouteCorridor(coords) {
   navCorridorRoads = [];
   if (!getNativeRideBridge() || coords.length < 2) return;
   try {
-    const response = await fetch(OVERPASS_API, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-      body: `data=${encodeURIComponent(buildCorridorQuery(sampleRouteForCorridor(coords)))}`,
-    });
-    if (!response.ok) throw new Error(`Overpass returned ${response.status}`);
-    const roads = parseCorridorRoads((await response.json()).elements);
+    const data = await overpassQuery(buildCorridorQuery(corridorBoxes(coords)));
+    const roads = parseCorridorRoads(data.elements);
     if (token !== corridorToken) return;
     navCorridorRoads = roads;
+    console.info(`[corridor] ${roads.length} streets loaded`);
     // Ride already running → hand the corridor to the native streamer now.
     if (nativeBackgroundRideActive) getNativeRideBridge()?.setRouteCorridor(JSON.stringify(roads));
   } catch (error) {
     console.warn('[corridor] fetch failed — device map will show the route only', error);
+    if (token === corridorToken) toast('Street map for the device is unavailable — map server busy');
   }
 }
 
