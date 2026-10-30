@@ -35,6 +35,10 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>
             Directions
           </button>
+          <button class="tab" data-tab="device">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/></svg>
+            Device
+          </button>
         </nav>
 
         <!-- Search Panel -->
@@ -169,6 +173,62 @@
             </div>
           </div>
 
+        </div>
+
+        <!-- Device Panel -->
+        <div class="panel" id="panel-device">
+          <p class="device-unavailable">Device settings are available in the Android app.</p>
+
+          <div class="device-card">
+            <div class="device-row">
+              <div class="device-conn">
+                <span id="device-conn-dot" class="device-dot"></span>
+                <span id="device-conn">Not connected</span>
+              </div>
+              <button id="device-connect-btn" class="save-btn">Connect</button>
+            </div>
+            <div class="device-row">
+              <span class="device-label">Battery</span>
+              <span id="device-battery" class="device-value">—</span>
+            </div>
+            <div class="device-battery-track"><div id="device-battery-bar" class="device-battery-bar"></div></div>
+          </div>
+
+          <div class="device-section">
+            <label class="footer-label">Display theme</label>
+            <div class="seg" id="device-theme">
+              <button class="seg-btn" data-theme="auto">Auto</button>
+              <button class="seg-btn" data-theme="day">Day</button>
+              <button class="seg-btn" data-theme="night">Night</button>
+            </div>
+            <p class="footer-hint">Auto switches at sunrise and sunset where you are. <span id="device-theme-now"></span></p>
+          </div>
+
+          <div class="device-section">
+            <div class="device-row">
+              <label class="footer-label" for="device-night-brightness">Night brightness</label>
+              <span id="device-night-brightness-val" class="device-value">35%</span>
+            </div>
+            <input id="device-night-brightness" class="device-range" type="range" min="10" max="100" step="5" value="35" />
+          </div>
+
+          <div class="device-section">
+            <div class="pi-toggle-row">
+              <div class="pi-toggle-labels">
+                <span class="device-toggle-title">Crash alerts</span>
+                <span class="pi-status">Notify this phone if the device detects a crash</span>
+              </div>
+              <button id="device-crash-toggle" class="toggle-switch" role="switch" aria-checked="true" aria-label="Crash alerts"><span class="toggle-thumb"></span></button>
+            </div>
+            <div class="pi-divider"></div>
+            <div class="pi-toggle-row">
+              <div class="pi-toggle-labels">
+                <span class="device-toggle-title">Park guard</span>
+                <span class="pi-status">Stay connected after rides and alert if the bike moves</span>
+              </div>
+              <button id="device-park-toggle" class="toggle-switch" role="switch" aria-checked="false" aria-label="Park guard"><span class="toggle-thumb"></span></button>
+            </div>
+          </div>
         </div>
 
         <!-- Footer: API Key -->

@@ -964,6 +964,7 @@ function setupTabs() {
       document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
       tab.classList.add('active');
       document.getElementById(`panel-${tab.dataset.tab}`).classList.add('active');
+      setDeviceTabActive(tab.dataset.tab === 'device');
     });
   });
 }
@@ -1376,6 +1377,96 @@ function setupSidebar() {
   });
 }
 
+// ── Device tab (Trakio display: status + settings) ────────
+let deviceStatusTimer = null;
+
+function setupDevicePanel() {
+  const bridge = getNativeRideBridge();
+  const panel = document.getElementById('panel-device');
+  if (!bridge?.getDeviceSettings) {
+    panel.classList.add('unavailable');
+    return;
+  }
+
+  const themeBtns = document.querySelectorAll('#device-theme .seg-btn');
+  const brightness = document.getElementById('device-night-brightness');
+  const brightnessVal = document.getElementById('device-night-brightness-val');
+  const toggles = {
+    crashAlerts: document.getElementById('device-crash-toggle'),
+    parkGuard: document.getElementById('device-park-toggle'),
+  };
+
+  const save = (patch) => {
+    try { render(JSON.parse(bridge.setDeviceSettings(JSON.stringify(patch)))); }
+    catch (e) { console.warn('[device] save failed', e); }
+  };
+
+  function render(settings) {
+    themeBtns.forEach(b => b.classList.toggle('active', b.dataset.theme === settings.themeMode));
+    brightness.value = settings.nightBrightness;
+    brightnessVal.textContent = `${settings.nightBrightness}%`;
+    for (const [key, el] of Object.entries(toggles)) el.setAttribute('aria-checked', String(!!settings[key]));
+  }
+
+  themeBtns.forEach(b => b.addEventListener('click', () => save({ themeMode: b.dataset.theme })));
+  brightness.addEventListener('input', () => { brightnessVal.textContent = `${brightness.value}%`; });
+  brightness.addEventListener('change', () => save({ nightBrightness: Number(brightness.value) }));
+  for (const [key, el] of Object.entries(toggles)) {
+    el.addEventListener('click', () => save({ [key]: el.getAttribute('aria-checked') !== 'true' }));
+  }
+
+  document.getElementById('device-connect-btn').addEventListener('click', () => {
+    const status = readDeviceStatus();
+    if (status?.connected || status?.mode === 'idle') {
+      bridge.disconnectDevice();
+    } else if (!bridge.connectDevice()) {
+      toast('Allow "Nearby devices" to connect to your Trakio');
+    }
+    setTimeout(renderDeviceStatus, 600);
+  });
+
+  try { render(JSON.parse(bridge.getDeviceSettings())); } catch (e) { console.warn('[device] load failed', e); }
+  renderDeviceStatus();
+}
+
+function readDeviceStatus() {
+  try { return JSON.parse(getNativeRideBridge()?.getDeviceStatus() || 'null'); }
+  catch { return null; }
+}
+
+function renderDeviceStatus() {
+  const s = readDeviceStatus();
+  if (!s) return;
+  const label = s.connected
+    ? `Connected${s.deviceName ? ` · ${s.deviceName}` : ''}`
+    : s.mode === 'off' ? 'Not connected' : 'Searching…';
+  document.getElementById('device-conn').textContent = label;
+  document.getElementById('device-conn-dot').classList.toggle('on', !!s.connected);
+
+  const hasBattery = s.battery != null;
+  document.getElementById('device-battery').textContent = hasBattery
+    ? `${s.battery}%${s.charging ? ' · charging' : ''}` : '—';
+  const bar = document.getElementById('device-battery-bar');
+  bar.style.width = hasBattery ? `${s.battery}%` : '0%';
+  bar.classList.toggle('low', hasBattery && s.battery <= 15 && !s.charging);
+  document.getElementById('device-theme-now').textContent = s.theme ? `Showing ${s.theme} theme` : '';
+
+  const btn = document.getElementById('device-connect-btn');
+  const linked = s.connected || s.mode === 'idle';
+  btn.textContent = linked ? 'Disconnect' : 'Connect';
+  btn.disabled = s.mode === 'ride';
+  btn.title = s.mode === 'ride' ? 'Connected for the current ride' : '';
+}
+
+// Poll the native status only while the Device tab is open.
+function setDeviceTabActive(active) {
+  clearInterval(deviceStatusTimer);
+  deviceStatusTimer = null;
+  if (!active || !getNativeRideBridge()?.getDeviceStatus) return;
+  renderDeviceStatus();
+  deviceStatusTimer = setInterval(renderDeviceStatus, 3000);
+}
+
 // ── API key ───────────────────────────────────────────────
 function setupApiKey() {
   const input = document.getElementById('api-key-input');
@@ -1418,4 +1509,5 @@ document.addEventListener('DOMContentLoaded', () => {
   setupDirections();
   setupModeSelector();
   setupMapControls();
+  setupDevicePanel();
 });
