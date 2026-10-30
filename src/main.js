@@ -28,6 +28,8 @@ let nativeBackgroundRideActive = false;
 let offRouteCount = 0;        // consecutive fixes measured off the route line
 let rerouting = false;        // a re-route request is in flight
 let lastRerouteAt = 0;        // timestamp of the last re-route (for cooldown)
+let navCorridorRoads = [];    // nearby streets along the route, for device map_area frames
+let corridorToken = 0;        // ignores corridor fetches for a superseded route
 
 
 // ── Constants ─────────────────────────────────────────────
@@ -40,6 +42,15 @@ const OVERPASS_API = 'https://overpass-api.de/api/interpreter';
 const JUNCTION_QUERY_RADIUS_METERS = 15;
 const JUNCTION_BRANCH_LENGTH_METERS = 35;
 const junctionRoadCache = new Map();
+
+// Road corridor along the whole route, fetched once per route. The native
+// service slices it into ~1.2 km map_area frames for the device.
+const CORRIDOR_MAJOR_RADIUS_M = 350;
+const CORRIDOR_MINOR_RADIUS_M = 150;
+const CORRIDOR_SAMPLE_M = 120;      // polyline vertex spacing in the query
+const CORRIDOR_MAX_SAMPLES = 400;   // keeps the Overpass query a sane size
+const CORRIDOR_MAJOR_HIGHWAYS = '^(motorway|trunk|primary|secondary)(_link)?$';
+const CORRIDOR_MINOR_HIGHWAYS = '^(tertiary|tertiary_link|unclassified|residential|living_street)$';
 
 const STYLES = {
   dark: 'https://api.olamaps.io/tiles/vector/v1/styles/default-dark-standard/style.json',
@@ -172,6 +183,9 @@ async function applyRouteData(data, { fit = true } = {}) {
   document.getElementById('route-duration').textContent = durText;
   document.getElementById('route-distance').textContent = distKm;
   document.getElementById('route-info').classList.add('visible');
+
+  // Corridor loads in the background; it must not hold up the route display.
+  loadRouteCorridor(navRouteCoords);
 
   // Store steps for navigation
   navSteps = await enrichStepsWithJunctionRoads(leg.steps || []);
@@ -427,6 +441,68 @@ async function enrichStepsWithJunctionRoads(steps) {
   } catch (error) {
     console.warn('[junction-roads] enrichment fallback to plain steps', error);
     return steps || [];
+  }
+}
+
+// ── Route corridor (streets near the route, for the device map) ──
+function sampleRouteForCorridor(coords) {
+  if (coords.length < 2) return coords;
+  let total = 0;
+  for (let i = 1; i < coords.length; i++) {
+    total += haversine(coords[i - 1][0], coords[i - 1][1], coords[i][0], coords[i][1]);
+  }
+  const spacing = Math.max(CORRIDOR_SAMPLE_M, total / CORRIDOR_MAX_SAMPLES);
+  const out = [coords[0]];
+  let acc = 0;
+  for (let i = 1; i < coords.length; i++) {
+    acc += haversine(coords[i - 1][0], coords[i - 1][1], coords[i][0], coords[i][1]);
+    if (acc >= spacing) { out.push(coords[i]); acc = 0; }
+  }
+  const last = coords[coords.length - 1];
+  if (out[out.length - 1] !== last) out.push(last);
+  return out;
+}
+
+function buildCorridorQuery(samples) {
+  const line = samples.map(([lat, lng]) => `${lat.toFixed(5)},${lng.toFixed(5)}`).join(',');
+  return `[out:json][timeout:60];
+(
+  way(around:${CORRIDOR_MAJOR_RADIUS_M},${line})[highway~"${CORRIDOR_MAJOR_HIGHWAYS}"];
+  way(around:${CORRIDOR_MINOR_RADIUS_M},${line})[highway~"${CORRIDOR_MINOR_HIGHWAYS}"];
+);
+out geom qt;`;
+}
+
+// Compact form handed to native: {w: 1 minor | 2 major, n: name, c: [[lat, lng], ...]}.
+function parseCorridorRoads(elements) {
+  const major = new RegExp(CORRIDOR_MAJOR_HIGHWAYS);
+  return (elements || [])
+    .filter(el => el.type === 'way' && el.geometry?.length >= 2)
+    .map(el => ({
+      w: major.test(el.tags?.highway || '') ? 2 : 1,
+      n: el.tags?.name || '',
+      c: el.geometry.map(g => [+g.lat.toFixed(5), +g.lon.toFixed(5)]),
+    }));
+}
+
+async function loadRouteCorridor(coords) {
+  const token = ++corridorToken;
+  navCorridorRoads = [];
+  if (!getNativeRideBridge() || coords.length < 2) return;
+  try {
+    const response = await fetch(OVERPASS_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      body: `data=${encodeURIComponent(buildCorridorQuery(sampleRouteForCorridor(coords)))}`,
+    });
+    if (!response.ok) throw new Error(`Overpass returned ${response.status}`);
+    const roads = parseCorridorRoads((await response.json()).elements);
+    if (token !== corridorToken) return;
+    navCorridorRoads = roads;
+    // Ride already running → hand the corridor to the native streamer now.
+    if (nativeBackgroundRideActive) getNativeRideBridge()?.setRouteCorridor(JSON.stringify(roads));
+  } catch (error) {
+    console.warn('[corridor] fetch failed — device map will show the route only', error);
   }
 }
 
@@ -1019,6 +1095,7 @@ function buildRouteStartPayload() {
       duration: s.duration,
       junction_roads: s.junction_roads || null,
     })),
+    corridorRoads: navCorridorRoads,
   };
 }
 
