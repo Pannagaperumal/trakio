@@ -3,6 +3,7 @@
 #include <BLEServer.h>
 #include <BLESecurity.h>
 #include <string>
+#include "host/ble_store.h"
 #include "state.h"
 
 #define DEVICE_NAME  "Trakio-Round"
@@ -86,6 +87,12 @@ class SecCb : public BLESecurityCallbacks {
   void onAuthenticationComplete(ble_gap_conn_desc *desc) override {
     Serial.printf("[link] security: %s encrypted=%d bonded=%d\n", addrStr(desc->peer_id_addr),
                   desc->sec_state.encrypted, desc->sec_state.bonded);
+    // Keys don't match (the phone re-paired, or we kept a stale bond): drop
+    // ours so the next attempt pairs fresh instead of failing forever.
+    if (!desc->sec_state.encrypted) {
+      int rc = ble_store_util_delete_peer(&desc->peer_id_addr);
+      Serial.printf("[link] cleared stale bond for %s (rc=%d)\n", addrStr(desc->peer_id_addr), rc);
+    }
   }
 };
 

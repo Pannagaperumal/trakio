@@ -20,7 +20,7 @@ static volatile bool playing = false;
 static bool ok = false;
 static bool ampOn = false;
 static uint32_t ampOffAtMs = 0;
-static float gain = 0.5f;
+static float gain = 0.8f;
 
 static bool wr(uint8_t reg, uint8_t val) {
   Wire.beginTransmission(I2C_ADDR_CODEC);
@@ -61,7 +61,9 @@ static bool codecInit() {
 
 struct Note { uint16_t hz, ms; };
 
-static void playNotes(const Note *n, int count) {
+// drive > 1 soft-clips the sine toward a square: same peak level, more
+// harmonics, so it sounds louder through the small speaker.
+static void playNotes(const Note *n, int count, float vol, float drive = 1.0f) {
   static int16_t buf[256 * 2];
   for (int k = 0; k < count; k++) {
     int total = RATE * n[k].ms / 1000;
@@ -71,7 +73,8 @@ static void playNotes(const Note *n, int count) {
       int len = min(256, total - i);
       for (int j = 0; j < len; j++, i++) {
         float env = min(1.0f, min(i, total - i) / (float)fade);
-        int16_t v = (int16_t)(sinf(ph) * 30000.0f * gain * env);
+        float w = drive > 1.0f ? tanhf(sinf(ph) * drive) / tanhf(drive) : sinf(ph);
+        int16_t v = (int16_t)(w * 30000.0f * vol * env);
         ph += step;
         if (ph > 2 * (float)M_PI) ph -= 2 * (float)M_PI;
         buf[2 * j] = buf[2 * j + 1] = v;
@@ -89,9 +92,12 @@ static void audioTask(void *) {
     if (xQueueReceive(q, &kind, portMAX_DELAY) != pdTRUE) continue;
     playing = true;
     switch (kind) {
-      case 1: { static const Note n[] = {{988, 140}, {0, 60}, {988, 140}}; playNotes(n, 3); break; }
-      case 2: { static const Note n[] = {{784, 110}, {988, 110}, {1319, 220}}; playNotes(n, 3); break; }
-      default: { static const Note n[] = {{880, 120}, {1319, 180}}; playNotes(n, 2); break; }
+      case 1: { static const Note n[] = {{988, 140}, {0, 60}, {988, 140}}; playNotes(n, 3, gain); break; }
+      case 2: { static const Note n[] = {{784, 110}, {988, 110}, {1319, 220}}; playNotes(n, 3, gain); break; }
+      // Crash alerts ignore the volume setting: they must be heard.
+      case 3: { static const Note n[] = {{1760, 160}}; playNotes(n, 1, 1.0f, 2.5f); break; }
+      case 4: { static const Note n[] = {{1760, 250}, {0, 90}, {1760, 250}, {0, 90}, {2093, 600}}; playNotes(n, 5, 1.0f, 2.5f); break; }
+      default: { static const Note n[] = {{880, 120}, {1319, 180}}; playNotes(n, 2, gain); break; }
     }
     playing = false;
   }

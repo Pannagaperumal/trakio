@@ -5,6 +5,7 @@
 
 bool audio_init();               // false if the codec doesn't answer
 bool audio_ok();
-void audio_chime(uint8_t kind);  // 0 = test/confirm, 1 = turn soon, 2 = turn now
+void audio_chime(uint8_t kind);  // 0 = test/confirm, 1 = turn soon, 2 = turn now,
+                                 // 3 = crash countdown tick, 4 = crash alarm (both full volume)
 void audio_set_volume(uint8_t pct);
 void audio_poll();               // loop task: switches the amplifier off when idle

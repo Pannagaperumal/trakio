@@ -139,12 +139,16 @@ void setup() {
 
 // Same newline-delimited JSON frames as BLE, typed over USB serial — e.g. a
 // {"type":"time",...} frame to set the clock without a phone.
+// Typing `crash` runs the crash flow without a real impact (USB only, for testing).
+static bool testCrash = false;
+
 static void serialPoll() {
   static String buf;
   while (Serial.available()) {
     char c = (char)Serial.read();
     if (c == '\n' || c == '\r') {
-      if (buf.length()) state_handle_frame(buf.c_str(), buf.length());
+      if (buf == "crash") testCrash = true;
+      else if (buf.length()) state_handle_frame(buf.c_str(), buf.length());
       buf = "";
     } else if (buf.length() < 512) {
       buf += c;
@@ -175,6 +179,8 @@ void loop() {
       if (ev & EV_ROUTE_START) imu_level_here();
     }
     if (ev & EV_SOS && sosSent) { crashLeft = 0; ui_crash_sos_sent(); }
+    // Rider tapped "I'm OK" on the phone: stop the countdown here too.
+    if (ev & EV_SOS && !sosSent && crashLeft > 0) { crashLeft = -1; ui_crash_show(-1); }
     // `time` frames are authoritative: always persist them. The clock implied
     // by nav frames is saved once per boot.
     if (((ev & EV_TIME) || ((ev & EV_NAV) && !clockStored)) && clock_epoch_ms() > 0) {
@@ -216,18 +222,26 @@ void loop() {
   // sensors: crash + park guard
   sensors_poll(nav.active);
   float g;
-  if (imu_take_crash(g) && nav.active && crashLeft < 0) {
+  bool crashed = imu_take_crash(g) && nav.active;
+  if (testCrash) {
+    testCrash = false;
+    crashed = true;
+    g = 7.5f;
+    Serial.println("[test] simulated crash");
+  }
+  if (crashed && crashLeft < 0) {
     crashLeft = 10;
     crashTickMs = now;
     activity();
     ui_crash_show(crashLeft);
+    audio_chime(3);
     link_send(String("{\"type\":\"imu_event\",\"event\":\"crash\",\"peakG\":") + String(g, 1) + "}");
   }
   if (crashLeft > 0 && now - crashTickMs >= 1000) {
     crashTickMs += 1000;
     crashLeft--;
-    if (crashLeft > 0) ui_crash_show(crashLeft);
-    else { link_send("{\"type\":\"sos_request\"}"); ui_crash_sos_sent(); }
+    if (crashLeft > 0) { ui_crash_show(crashLeft); audio_chime(3); }
+    else { link_send("{\"type\":\"sos_request\"}"); ui_crash_sos_sent(); audio_chime(4); }
     lastActivityMs = now;
   }
   imu_set_parked(!nav.active && now - lastActivityMs > PARKED_AFTER_MS);
