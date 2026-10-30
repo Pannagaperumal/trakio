@@ -12,12 +12,16 @@ import android.webkit.WebChromeClient
 import android.webkit.WebView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
 class MainActivity : TauriActivity() {
   private val permissionRequestCode = 4101
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    enterFullScreen()
     requestMissingPermissions()
     // Park guard keeps the device linked between rides — resume it on launch.
     if (DeviceSettings.load(this).parkGuard) startIdleLink()
@@ -34,6 +38,22 @@ class MainActivity : TauriActivity() {
         callback.invoke(origin, true, false)
       }
     }
+  }
+
+  // Immersive full screen: status and navigation bars hidden; a swipe from
+  // the edge shows them briefly. Re-applied on focus since dialogs (e.g.
+  // permission prompts) bring the bars back.
+  private fun enterFullScreen() {
+    WindowCompat.setDecorFitsSystemWindows(window, false)
+    WindowInsetsControllerCompat(window, window.decorView).apply {
+      hide(WindowInsetsCompat.Type.systemBars())
+      systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+    }
+  }
+
+  override fun onWindowFocusChanged(hasFocus: Boolean) {
+    super.onWindowFocusChanged(hasFocus)
+    if (hasFocus) enterFullScreen()
   }
 
   private fun requestMissingPermissions() {
