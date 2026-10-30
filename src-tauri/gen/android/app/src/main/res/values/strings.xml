@@ -4,4 +4,14 @@
     <string name="tracking_notification_channel_name">trakio ride tracking</string>
     <string name="tracking_notification_title">trakio navigation active</string>
     <string name="tracking_notification_text">Keeping ride tracking and Pi display updates alive.</string>
+    <string name="link_notification_title">trakio device connected</string>
+    <string name="link_notification_text">Staying connected for park guard, calls and battery updates.</string>
+    <string name="device_alert_channel_name">trakio device alerts</string>
+    <string name="device_crash_title">Possible crash detected</string>
+    <string name="device_crash_text">Your trakio device registered a %1$.1f g impact. Tap \"I\'m OK\" if you\'re fine.</string>
+    <string name="device_crash_ok">I\'m OK</string>
+    <string name="device_park_title">Your bike was moved</string>
+    <string name="device_park_text">Park guard felt a %1$.1f g movement while parked.</string>
+    <string name="device_low_battery_title">trakio device battery low</string>
+    <string name="device_low_battery_text">%1$d%% left — charge it before your next ride.</string>
 </resources>

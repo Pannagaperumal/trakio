@@ -72,5 +72,34 @@ class BleNavFrameBuilderTest {
     val highlightedRoad = json.getJSONArray("junctionRoads").getJSONObject(1)
     assertTrue(highlightedRoad.getBoolean("highlighted"))
     assertTrue(highlightedRoad.getJSONArray("coords").length() <= 3)
+    // v1 frames carry no protocol v2 fields.
+    assertTrue(!json.has("area") && !json.has("speed"))
+  }
+
+  @Test
+  fun addsProtocolV2FieldsWhenGiven() {
+    val step = PiNavigationService.RouteStep(
+      instructions = "Continue", maneuver = "straight",
+      endLocation = PiNavigationService.LatLng(12.9200, 77.5735),
+      distanceM = 300.0, durationS = 40.0, junctionRoads = null,
+    )
+    val payload = BleNavFrameBuilder.buildNavFrame(
+      lat = 12.9177, lng = 77.5734, heading = 10.0, distToEnd = 250.0, step = step, navStepIdx = 0,
+      routeCoords = emptyList(), remainingStepDistances = emptyList(), remainingStepDurations = emptyList(),
+      lookAheadMeters = 200.0, maxRoutePoints = 10, maxJunctionRoadPoints = 3, nowMillis = 0L,
+      extras = BleNavFrameBuilder.NavExtras(area = 7, ax = -120, ay = 340, street = "Market Street", speedKmh = 27),
+    )
+    val json = JSONObject(payload)
+    assertEquals(7, json.getInt("area"))
+    assertEquals(-120, json.getInt("ax"))
+    assertEquals(340, json.getInt("ay"))
+    assertEquals("Market Street", json.getString("street"))
+    assertEquals(27, json.getInt("speed"))
+  }
+
+  @Test
+  fun haversineMatchesKnownDistance() {
+    // One degree of latitude ≈ 111.2 km.
+    assertEquals(111_195.0, BleNavFrameBuilder.haversine(12.0, 77.0, 13.0, 77.0), 50.0)
   }
 }

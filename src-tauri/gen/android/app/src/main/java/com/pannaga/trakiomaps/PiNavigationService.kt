@@ -4,12 +4,14 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.BroadcastReceiver
@@ -26,7 +28,9 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.ContactsContract
+import android.telecom.TelecomManager
 import android.telephony.TelephonyManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -42,13 +46,32 @@ class PiNavigationService : Service(), LocationListener {
   companion object {
     const val ACTION_START_NAVIGATION = "com.pannaga.trakiomaps.action.START_NAVIGATION"
     const val ACTION_STOP_NAVIGATION = "com.pannaga.trakiomaps.action.STOP_NAVIGATION"
+    // Idle link: stay connected between rides (park guard, battery, calls).
+    const val ACTION_START_LINK = "com.pannaga.trakiomaps.action.START_LINK"
+    const val ACTION_STOP_LINK = "com.pannaga.trakiomaps.action.STOP_LINK"
+    const val ACTION_CRASH_OK = "com.pannaga.trakiomaps.action.CRASH_OK"
     const val EXTRA_ROUTE_PAYLOAD = "route_payload"
+
+    // Route payloads (with the road corridor) can exceed the ~1 MB Binder
+    // limit for Intent extras, so the activity stages them here instead.
+    @Volatile private var stagedRoutePayload: String? = null
+    fun stageRoutePayload(payload: String) { stagedRoutePayload = payload }
+
+    // Running instance, for settings / corridor updates from the WebView bridge.
+    @Volatile var instance: PiNavigationService? = null
+      private set
 
     // logcat tag — filter with: adb logcat -s TrakioBLE
     private const val TAG = "TrakioBLE"
 
     private const val NOTIFICATION_CHANNEL_ID = "trakio_navigation_tracking"
     private const val NOTIFICATION_ID = 4102
+    private const val ALERT_CHANNEL_ID = "trakio_device_alerts"
+    private const val CRASH_NOTIFICATION_ID = 4103
+    private const val PARK_NOTIFICATION_ID = 4104
+    private const val BATTERY_NOTIFICATION_ID = 4105
+    private const val PARK_ALERT_DEDUPE_MS = 60_000L
+    private const val LOW_BATTERY_PERCENT = 15
     private const val ADVANCE_THRESHOLD_METERS = 35.0
     private const val ARRIVAL_THRESHOLD_METERS = 25.0
     private const val CALL_DEDUPE_MS = 8000L
@@ -63,18 +86,35 @@ class PiNavigationService : Service(), LocationListener {
     // The phone writes JSON frames (newline-delimited) to the RX characteristic.
     private val NUS_SERVICE: UUID = UUID.fromString("6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
     private val NUS_RX_CHAR: UUID = UUID.fromString("6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
+    // Device → phone notify characteristic (optional: the CrowPanel lacks it).
+    private val NUS_TX_CHAR: UUID = UUID.fromString("6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
+    private val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
     // Prefer a bonded device whose name contains this (case-insensitive);
     // otherwise the first bonded device is used. Empty = no name preference.
     private const val TARGET_NAME_SUBSTR = "trakio"
 
-    // ── Smooth frame interpolation between ~1 Hz GPS fixes ──
-    // We emit at a higher cadence, dead-reckoning position from the last fix
-    // and easing heading, so the display moves fluidly instead of jumping.
-    private const val EMIT_INTERVAL_MS = 150L     // ~6.5 Hz smooth frame cadence (BLE-safe)
+    // ── Smooth frame interpolation between GPS fixes ──
+    // Every tick dead-reckons position from the last fix and eases heading;
+    // frames go out at an adaptive rate (the device animates in between).
+    private const val EMIT_TICK_MS = 250L
+    private const val EMIT_MOVING_MS = 250L       // 4 Hz above MOVING_SPEED
+    private const val EMIT_SLOW_MS = 1000L        // 1 Hz below it
+    private const val HEARTBEAT_MS = 5000L        // when stopped / nothing changed
+    private const val MOVING_SPEED = 2.0          // m/s
+    private const val STOPPED_SPEED = 0.5         // m/s
     private const val MAX_EXTRAPOLATION_M = 40.0  // cap drift if GPS stalls
-    private const val HEADING_EASE = 0.22         // per-tick heading smoothing (0..1)
-    private const val POS_EASE = 0.34             // per-tick position correction (0..1)
+    private const val HEADING_EASE = 0.3          // per-tick heading smoothing (0..1)
+    private const val POS_EASE = 0.45             // per-tick position correction (0..1)
+
+    // GPS cadence follows speed.
+    private const val GPS_RIDING_MS = 1000L
+    private const val GPS_STOPPED_MS = 3000L
+
+    // ── Map areas (protocol v2) ──
+    private const val AREA_EDGE_MARGIN_M = 250.0  // re-anchor this close to the edge
+    private const val AREA_AHEAD_M = 300.0        // new anchor sits ahead of the rider
+    private const val THEME_CHECK_MS = 60_000L
 
     private const val REQUESTED_MTU = 247
     private const val RECONNECT_BASE_DELAY_MS = 2000L
@@ -97,6 +137,26 @@ class PiNavigationService : Service(), LocationListener {
   @Volatile private var navActive = false
   private var lastCallSignature = ""
   private var lastCallAt = 0L
+  private var lastPhoneState: String? = null
+
+  // Idle link (between rides) — see ACTION_START_LINK.
+  @Volatile private var linkActive = false
+  private val linkWanted get() = navActive || linkActive
+  private var settings = DeviceSettings()
+
+  // ── Protocol v2 state ──
+  private var corridorRoads: List<CorridorRoad> = emptyList()
+  private var currentArea: MapAreaBuilder.MapArea? = null
+  private var areaSeq = 0
+  private var currentStreet = ""
+  @Volatile private var themeFrame: String? = null
+  private var moving = false
+  private var gpsIntervalMs = 0L
+  private var lastEmitAt = 0L
+  private var lastNavKey = ""
+  private var lastParkAlertAt = 0L
+  private var lowBatteryWarned = false
+  private val deviceReader = DeviceFrames.LineReader()
 
   // ── Smoothing state: last GPS fix + eased position/heading we emit from ──
   private var fixLat = 0.0
@@ -117,13 +177,23 @@ class PiNavigationService : Service(), LocationListener {
   private val emitRunnable = object : Runnable {
     override fun run() {
       if (navActive && !navArrived) emitSmoothFrame()
-      if (navActive) mainHandler.postDelayed(this, EMIT_INTERVAL_MS)
+      if (navActive) mainHandler.postDelayed(this, EMIT_TICK_MS)
+    }
+  }
+
+  // Sunrise/sunset can flip the theme mid-ride; check once a minute.
+  private val themeRunnable = object : Runnable {
+    override fun run() {
+      if (!linkWanted) return
+      refreshTheme()
+      mainHandler.postDelayed(this, THEME_CHECK_MS)
     }
   }
 
   // ── BLE state (touched from both the main thread and GATT callback thread) ──
   @Volatile private var bluetoothGatt: BluetoothGatt? = null
   @Volatile private var rxChar: BluetoothGattCharacteristic? = null
+  @Volatile private var discoveredRxChar: BluetoothGattCharacteristic? = null
   @Volatile private var mtu = 23
   @Volatile private var servicesReady = false
   private var reconnectAttempts = 0
@@ -137,6 +207,8 @@ class PiNavigationService : Service(), LocationListener {
   override fun onCreate() {
     super.onCreate()
     locationManager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+    settings = DeviceSettings.load(this)
+    instance = this
     ensureNotificationChannel()
   }
 
@@ -144,6 +216,7 @@ class PiNavigationService : Service(), LocationListener {
     when (intent?.action) {
       ACTION_START_NAVIGATION -> {
         val payload = intent.getStringExtra(EXTRA_ROUTE_PAYLOAD)
+          ?: stagedRoutePayload.also { stagedRoutePayload = null }
         if (payload.isNullOrBlank()) {
           Log.w(TAG, "start ignored: empty route payload")
           stopSelf()
@@ -152,12 +225,13 @@ class PiNavigationService : Service(), LocationListener {
 
         // Going foreground can throw on Android 14+ if the location runtime
         // permission isn't granted — never let that crash the app.
-        if (!startForegroundSafely()) {
-          stopSelf()
+        if (!startForegroundSafely(ride = true)) {
+          if (!linkActive) stopSelf()
           return START_NOT_STICKY
         }
 
         navActive = true
+        DeviceStatus.mode = "ride"
         navArrived = false
         navStepIdx = 0
         smoothInit = false
@@ -167,21 +241,47 @@ class PiNavigationService : Service(), LocationListener {
           stopNavigation(sendRouteEnd = false)
           return START_NOT_STICKY
         }
-        Log.i(TAG, "ride START — ${routeSteps.size} steps, ${routeCoords.size} route points")
+        Log.i(TAG, "ride START — ${routeSteps.size} steps, ${routeCoords.size} route points, " +
+          "${corridorRoads.size} corridor roads")
         reconnectAttempts = 0
         resetBleRouteState()
+        currentArea = null
+        lastNavKey = ""
+        lastEmitAt = 0L
         // On a re-route the link is already up, so push the refreshed trip
         // summary now (new totals); on first start it flushes after discovery.
         if (servicesReady) routeStartFrame?.let { sendFrame(it) }
+        refreshMapArea(fixLat, fixLng)
+        // A passive autoConnect left over from the idle link can take a while;
+        // swap it for a direct connect now that we're riding.
+        if (bluetoothGatt != null && !servicesReady) disconnectBle()
         connectBle()
         registerPhoneStateReceiver()
         registerBtStateReceiver()
+        moving = false
+        gpsIntervalMs = 0L
         startLocationUpdates()
+        refreshTheme()
         mainHandler.removeCallbacks(emitRunnable)
-        mainHandler.postDelayed(emitRunnable, EMIT_INTERVAL_MS)
+        mainHandler.postDelayed(emitRunnable, EMIT_TICK_MS)
+        mainHandler.removeCallbacks(themeRunnable)
+        mainHandler.postDelayed(themeRunnable, THEME_CHECK_MS)
       }
 
       ACTION_STOP_NAVIGATION -> stopNavigation(sendRouteEnd = true)
+
+      ACTION_START_LINK -> startIdleLink()
+
+      ACTION_STOP_LINK -> {
+        linkActive = false
+        if (!navActive) teardown()
+      }
+
+      ACTION_CRASH_OK -> {
+        cancelNotification(CRASH_NOTIFICATION_ID)
+        sendFrame(DeviceFrames.sosStatus("cancelled"))
+        if (!linkWanted) stopSelf()
+      }
 
       else -> {
         // Restarted by the system with no intent — we can't recover ride state.
@@ -196,6 +296,9 @@ class PiNavigationService : Service(), LocationListener {
   }
 
   override fun onDestroy() {
+    if (instance === this) instance = null
+    DeviceStatus.connected = false
+    DeviceStatus.mode = "off"
     mainHandler.removeCallbacksAndMessages(null)
     stopLocationUpdates()
     unregisterPhoneStateReceiver()
@@ -204,12 +307,15 @@ class PiNavigationService : Service(), LocationListener {
     super.onDestroy()
   }
 
-  private fun startForegroundSafely(): Boolean {
+  // Rides run as a location FGS; the idle link as a connectedDevice FGS.
+  private fun startForegroundSafely(ride: Boolean): Boolean {
     return try {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        startForeground(NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+        val type = if (ride) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+          else ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        startForeground(NOTIFICATION_ID, buildNotification(ride), type)
       } else {
-        startForeground(NOTIFICATION_ID, buildNotification())
+        startForeground(NOTIFICATION_ID, buildNotification(ride))
       }
       true
     } catch (e: Exception) {
@@ -259,6 +365,12 @@ class PiNavigationService : Service(), LocationListener {
       smoothInit = true
     }
 
+    updateMotionState()
+    refreshMapArea(fixLat, fixLng)
+    currentArea?.let { area ->
+      currentStreet = area.streetAt(area.localXY(fixLat, fixLng)) ?: currentStreet
+    }
+
     if (navStepIdx == routeSteps.lastIndex && distToEnd < ARRIVAL_THRESHOLD_METERS) {
       navArrived = true
       sendFrame(
@@ -299,8 +411,99 @@ class PiNavigationService : Service(), LocationListener {
     emitLat += (predLat - emitLat) * POS_EASE
     emitLng += (predLng - emitLng) * POS_EASE
 
+    // Adaptive rate: 4 Hz riding, 1 Hz slow, heartbeat when stopped, and
+    // nothing at all if the frame wouldn't change.
+    val now = SystemClock.elapsedRealtime()
+    val interval = when {
+      fixSpeed > MOVING_SPEED -> EMIT_MOVING_MS
+      fixSpeed > STOPPED_SPEED -> EMIT_SLOW_MS
+      else -> HEARTBEAT_MS
+    }
+    if (now - lastEmitAt < interval) return
+
     val distToEnd = BleNavFrameBuilder.haversine(emitLat, emitLng, step.endLocation.lat, step.endLocation.lng)
-    sendFrame(computeMiniMap(emitLat, emitLng, smoothHeading, step, distToEnd))
+    val extras = navExtras(emitLat, emitLng)
+    val key = "$navStepIdx|${smoothHeading.roundToInt()}|${distToEnd.roundToInt()}|" +
+      "${extras.area}|${extras.ax}|${extras.ay}|${extras.speedKmh}|${extras.street}"
+    if (key == lastNavKey && now - lastEmitAt < HEARTBEAT_MS) return
+    lastNavKey = key
+    lastEmitAt = now
+    sendFrame(computeMiniMap(emitLat, emitLng, smoothHeading, step, distToEnd, extras))
+  }
+
+  private fun navExtras(lat: Double, lng: Double): BleNavFrameBuilder.NavExtras {
+    val area = currentArea
+    val p = area?.localXY(lat, lng)
+    return BleNavFrameBuilder.NavExtras(
+      area = area?.id,
+      ax = p?.x?.roundToInt() ?: 0,
+      ay = p?.y?.roundToInt() ?: 0,
+      street = currentStreet,
+      speedKmh = (fixSpeed * 3.6).roundToInt(),
+    )
+  }
+
+  // Moving/stopped with hysteresis; drives GPS cadence and BLE priority.
+  private fun updateMotionState() {
+    val nowMoving = if (moving) fixSpeed >= STOPPED_SPEED else fixSpeed > MOVING_SPEED
+    if (nowMoving == moving && gpsIntervalMs != 0L) return
+    moving = nowMoving
+    Log.d(TAG, "motion: ${if (moving) "riding" else "stopped"} (${"%.1f".format(fixSpeed)} m/s)")
+    startLocationUpdates()
+    applyConnectionPriority()
+  }
+
+  // Send a new map_area once the rider nears the edge of the current one.
+  private fun refreshMapArea(lat: Double, lng: Double) {
+    if (corridorRoads.isEmpty() || (lat == 0.0 && lng == 0.0)) return
+    if (!MapAreaBuilder.needsNewArea(currentArea, lat, lng, AREA_EDGE_MARGIN_M)) return
+    val anchor = if (currentArea == null) PiNavigationService.LatLng(lat, lng)
+      else MapAreaBuilder.anchorAhead(lat, lng, targetHeading, AREA_AHEAD_M)
+    areaSeq = areaSeq % 255 + 1
+    val area = MapAreaBuilder.build(areaSeq, anchor.lat, anchor.lng, corridorRoads)
+    currentArea = area
+    Log.i(TAG, "map_area #${area.id}: ${area.roads.size} roads, ${area.frame.length} B")
+    // Not buffered while the link is down: the current area is replayed on connect.
+    sendFrame(area.frame, bufferIfDown = false)
+  }
+
+  // Corridor fetched by the WebView after the ride already started.
+  fun updateCorridor(json: String) {
+    mainHandler.post {
+      if (!navActive) return@post
+      corridorRoads = parseCorridorRoads(JSONArray(json))
+      Log.i(TAG, "corridor updated: ${corridorRoads.size} roads")
+      currentArea = null
+      refreshMapArea(fixLat, fixLng)
+    }
+  }
+
+  internal fun onSettingsChanged(next: DeviceSettings) {
+    mainHandler.post {
+      settings = next
+      refreshTheme()
+    }
+  }
+
+  private fun refreshTheme() {
+    val loc = themeLocation()
+    val frame = DeviceFrames.theme(settings, loc?.first, loc?.second, System.currentTimeMillis())
+    if (frame == themeFrame) return
+    themeFrame = frame
+    DeviceStatus.theme = JSONObject(frame).optString("mode")
+    sendFrame(frame, bufferIfDown = false)
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun themeLocation(): Pair<Double, Double>? {
+    if (fixTimeMs != 0L && !(fixLat == 0.0 && fixLng == 0.0)) return fixLat to fixLng
+    if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+      return null
+    }
+    val manager = locationManager ?: return null
+    return listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
+      .firstNotNullOfOrNull { runCatching { manager.getLastKnownLocation(it) }.getOrNull() }
+      ?.let { it.latitude to it.longitude }
   }
 
   // Ease angle a → b along the shortest arc; alpha in 0..1.
@@ -328,6 +531,7 @@ class PiNavigationService : Service(), LocationListener {
     heading: Double,
     step: RouteStep,
     distToEnd: Double,
+    extras: BleNavFrameBuilder.NavExtras,
   ): String {
     val remainingStepDistances = routeSteps.drop(navStepIdx + 1).map { it.distanceM }
     val remainingStepDurations = routeSteps.drop(navStepIdx + 1).map { it.durationS }
@@ -345,6 +549,7 @@ class PiNavigationService : Service(), LocationListener {
       maxRoutePoints = MAX_ROUTE_POINTS,
       maxJunctionRoadPoints = MAX_JUNCTION_ROAD_POINTS,
       nowMillis = System.currentTimeMillis(),
+      extras = extras,
     )
   }
 
@@ -391,6 +596,8 @@ class PiNavigationService : Service(), LocationListener {
         .put("totalDuration", json.optDouble("totalDuration", 0.0).roundToInt())
         .toString()
 
+      corridorRoads = parseCorridorRoads(json.optJSONArray("corridorRoads"))
+
       seedFromRouteOrigin(json.optJSONObject("origin"))
 
       routeSteps.isNotEmpty()
@@ -402,6 +609,26 @@ class PiNavigationService : Service(), LocationListener {
     }
   }
 
+  // [{w: 1|2, n: "name", c: [[lat, lng], ...]}, ...] from the JS corridor fetch.
+  private fun parseCorridorRoads(arr: JSONArray?): List<CorridorRoad> {
+    if (arr == null) return emptyList()
+    return buildList {
+      for (i in 0 until arr.length()) {
+        val road = arr.optJSONObject(i) ?: continue
+        val c = road.optJSONArray("c") ?: continue
+        val coords = buildList {
+          for (j in 0 until c.length()) {
+            val pair = c.optJSONArray(j) ?: continue
+            if (pair.length() < 2) continue
+            add(LatLng(pair.optDouble(0, 0.0), pair.optDouble(1, 0.0)))
+          }
+        }
+        if (coords.size < 2) continue
+        add(CorridorRoad(major = road.optInt("w", 1) >= 2, name = road.optString("n", ""), coords = coords))
+      }
+    }
+  }
+
   private fun startLocationUpdates() {
     if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
       ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
@@ -410,12 +637,16 @@ class PiNavigationService : Service(), LocationListener {
     }
 
     val manager = locationManager ?: return
+    val interval = if (moving) GPS_RIDING_MS else GPS_STOPPED_MS
+    if (interval == gpsIntervalMs) return
+    gpsIntervalMs = interval
     runCatching {
+      manager.removeUpdates(this)
       if (manager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-        manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 1f, this, Looper.getMainLooper())
+        manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, interval, 1f, this, Looper.getMainLooper())
       }
       if (manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-        manager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1500L, 1f, this, Looper.getMainLooper())
+        manager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, interval + 500L, 1f, this, Looper.getMainLooper())
       }
     }.onFailure { Log.w(TAG, "requestLocationUpdates failed: ${it.message}") }
   }
@@ -461,6 +692,7 @@ class PiNavigationService : Service(), LocationListener {
   }
 
   private fun stopLocationUpdates() {
+    gpsIntervalMs = 0L
     runCatching { locationManager?.removeUpdates(this) }
   }
 
@@ -504,17 +736,57 @@ class PiNavigationService : Service(), LocationListener {
     routeSteps = emptyList()
     routeCoords = emptyList()
     routeStartFrame = null
+    corridorRoads = emptyList()
+    currentArea = null
+    currentStreet = ""
     stopLocationUpdates()
+
+    // Park guard keeps the device link up after the ride.
+    if (settings.parkGuard || linkActive) {
+      startIdleLink()
+      return
+    }
+    // Give the route_end frame a moment to flush over BLE before tearing down.
+    mainHandler.postDelayed({ if (!linkWanted) teardown() }, 500L)
+  }
+
+  // Low-power link between rides: battery, calls, crash and park-guard events.
+  // Reconnects with autoConnect so the radio waits passively for the device
+  // to wake from deep sleep instead of polling.
+  private fun startIdleLink() {
+    if (!hasBtPermission()) {
+      Log.w(TAG, "idle link needs BLUETOOTH_CONNECT — not starting")
+      if (!navActive) teardown()
+      return
+    }
+    linkActive = true
+    if (!navActive) {
+      if (!startForegroundSafely(ride = false)) {
+        linkActive = false
+        teardown()
+        return
+      }
+      DeviceStatus.mode = "idle"
+    }
+    registerPhoneStateReceiver()
+    registerBtStateReceiver()
+    connectBle()
+    applyConnectionPriority()
+    refreshTheme()
+    mainHandler.removeCallbacks(themeRunnable)
+    mainHandler.postDelayed(themeRunnable, THEME_CHECK_MS)
+  }
+
+  private fun teardown() {
+    mainHandler.removeCallbacks(themeRunnable)
     unregisterPhoneStateReceiver()
     unregisterBtStateReceiver()
-    // Give the route_end frame a moment to flush over BLE before tearing down.
-    mainHandler.postDelayed({
-      runCatching {
-        disconnectBle()
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
-      }
-    }, 500L)
+    runCatching {
+      disconnectBle()
+      DeviceStatus.mode = "off"
+      stopForeground(STOP_FOREGROUND_REMOVE)
+      stopSelf()
+    }
   }
 
   // ── BLE: connect to the bonded ESP32 and stream JSON frames ──
@@ -525,7 +797,7 @@ class PiNavigationService : Service(), LocationListener {
 
   @SuppressLint("MissingPermission")
   private fun connectBle() {
-    if (!navActive) return
+    if (!linkWanted) return
     if (bluetoothGatt != null) {
       Log.d(TAG, "connectBle: already connecting/connected")
       return
@@ -563,12 +835,16 @@ class PiNavigationService : Service(), LocationListener {
       bonded.firstOrNull { TARGET_NAME_SUBSTR.isNotEmpty() && (it.name ?: "").contains(TARGET_NAME_SUBSTR, ignoreCase = true) }
         ?: bonded.first()
 
-    Log.i(TAG, "connectBle: connecting to ${target.name ?: "?"} (${target.address})")
+    // Riding: autoConnect=false → fast direct connect, we retry ourselves.
+    // Idle: autoConnect=true → the controller waits for the device to advertise.
+    val autoConnect = !navActive
+    Log.i(TAG, "connectBle: connecting to ${target.name ?: "?"} (${target.address}), autoConnect=$autoConnect")
+    DeviceStatus.deviceName = target.name
     rxChar = null
+    discoveredRxChar = null
     servicesReady = false
-    // autoConnect=false → fast direct connect; we handle reconnection ourselves.
     bluetoothGatt = try {
-      target.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+      target.connectGatt(this, autoConnect, gattCallback, BluetoothDevice.TRANSPORT_LE)
     } catch (e: Exception) {
       Log.e(TAG, "connectGatt threw: ${e.message}")
       null
@@ -584,7 +860,9 @@ class PiNavigationService : Service(), LocationListener {
       writing = false
     }
     rxChar = null
+    discoveredRxChar = null
     servicesReady = false
+    DeviceStatus.connected = false
     val gatt = bluetoothGatt
     bluetoothGatt = null
     if (gatt != null && hasBtPermission()) {
@@ -594,11 +872,21 @@ class PiNavigationService : Service(), LocationListener {
   }
 
   private fun scheduleReconnect() {
-    if (!navActive) return
+    if (!linkWanted) return
     reconnectAttempts++
     val delay = (RECONNECT_BASE_DELAY_MS * reconnectAttempts).coerceAtMost(RECONNECT_MAX_DELAY_MS)
     Log.d(TAG, "scheduling reconnect #$reconnectAttempts in ${delay}ms")
-    mainHandler.postDelayed({ if (navActive && bluetoothGatt == null) connectBle() }, delay)
+    mainHandler.postDelayed({ if (linkWanted && bluetoothGatt == null) connectBle() }, delay)
+  }
+
+  // BALANCED while riding, LOW_POWER when stopped or idle.
+  @SuppressLint("MissingPermission")
+  private fun applyConnectionPriority() {
+    val gatt = bluetoothGatt ?: return
+    if (!servicesReady || !hasBtPermission()) return
+    val priority = if (navActive && moving) BluetoothGatt.CONNECTION_PRIORITY_BALANCED
+      else BluetoothGatt.CONNECTION_PRIORITY_LOW_POWER
+    runCatching { gatt.requestConnectionPriority(priority) }
   }
 
   private val gattCallback = object : BluetoothGattCallback() {
@@ -615,6 +903,7 @@ class PiNavigationService : Service(), LocationListener {
         Log.w(TAG, "GATT error status=$status, newState=$newState — closing & retrying")
         rxChar = null
         servicesReady = false
+        DeviceStatus.connected = false
         runCatching { gatt.close() }
         bluetoothGatt = null
         scheduleReconnect()
@@ -635,9 +924,10 @@ class PiNavigationService : Service(), LocationListener {
           }, MTU_FALLBACK_DELAY_MS)
         }
         BluetoothProfile.STATE_DISCONNECTED -> {
-          Log.w(TAG, "GATT disconnected, navActive=$navActive")
+          Log.w(TAG, "GATT disconnected, navActive=$navActive, linkActive=$linkActive")
           rxChar = null
           servicesReady = false
+          DeviceStatus.connected = false
           runCatching { gatt.close() }
           bluetoothGatt = null
           scheduleReconnect()
@@ -660,17 +950,43 @@ class PiNavigationService : Service(), LocationListener {
         return
       }
       val service = gatt.getService(NUS_SERVICE)
-      rxChar = service?.getCharacteristic(NUS_RX_CHAR)
-      if (rxChar != null) {
-        servicesReady = true
-        Log.i(TAG, "NUS RX characteristic found — link ready, streaming will begin")
-        // Always (re)send the trip summary first so the ESP32 UI has it.
-        routeStartFrame?.let { enqueueChunks(it) }
-        flushPendingFrames()
-      } else {
+      val rx = service?.getCharacteristic(NUS_RX_CHAR)
+      if (rx == null) {
         Log.w(TAG, "NUS service/RX char NOT found (service=${service != null}). " +
           "Check the ESP32 advertises NUS service $NUS_SERVICE with RX char $NUS_RX_CHAR")
+        return
       }
+      discoveredRxChar = rx
+
+      // Subscribe to device → phone frames first: GATT allows one operation
+      // at a time, so streaming starts once the CCCD write completes.
+      val tx = service.getCharacteristic(NUS_TX_CHAR)
+      if (tx != null && tx.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0 && enableNotifications(gatt, tx)) {
+        mainHandler.postDelayed({ onLinkReady(gatt) }, MTU_FALLBACK_DELAY_MS)
+      } else {
+        Log.i(TAG, "no NUS TX notify characteristic — one-way link")
+        onLinkReady(gatt)
+      }
+    }
+
+    override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+      if (gatt !== bluetoothGatt || descriptor.uuid != CCCD) return
+      Log.i(TAG, "TX notify subscription status=$status")
+      mainHandler.post { onLinkReady(gatt) }
+    }
+
+    override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
+      if (gatt !== bluetoothGatt || characteristic.uuid != NUS_TX_CHAR) return
+      mainHandler.post { deviceReader.feed(value).forEach { handleDeviceFrame(it) } }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+      // Android 13+ also delivers the overload above; only handle older releases here.
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) return
+      @Suppress("DEPRECATION")
+      val value = characteristic.value ?: return
+      onCharacteristicChanged(gatt, characteristic, value.copyOf())
     }
 
     override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
@@ -681,9 +997,147 @@ class PiNavigationService : Service(), LocationListener {
     }
   }
 
+  @SuppressLint("MissingPermission")
+  private fun enableNotifications(gatt: BluetoothGatt, tx: BluetoothGattCharacteristic): Boolean {
+    if (!hasBtPermission()) return false
+    val cccd = tx.getDescriptor(CCCD) ?: return false
+    return runCatching {
+      gatt.setCharacteristicNotification(tx, true)
+      val value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        gatt.writeDescriptor(cccd, value) == BluetoothGatt.GATT_SUCCESS
+      } else {
+        @Suppress("DEPRECATION")
+        run {
+          cccd.value = value
+          gatt.writeDescriptor(cccd)
+        }
+      }
+    }.getOrDefault(false)
+  }
+
+  // Link is usable: replay state so the screen recovers in under a second —
+  // trip summary, theme, current map area, then the latest buffered nav frames.
+  private fun onLinkReady(gatt: BluetoothGatt) {
+    if (gatt !== bluetoothGatt || servicesReady) return
+    rxChar = discoveredRxChar ?: return
+    servicesReady = true
+    DeviceStatus.connected = true
+    Log.i(TAG, "link ready (mode=${DeviceStatus.mode}) — streaming will begin")
+    applyConnectionPriority()
+    if (navActive) routeStartFrame?.let { enqueueChunks(it) }
+    themeFrame?.let { enqueueChunks(it) }
+    if (navActive) currentArea?.let { enqueueChunks(it.frame) }
+    flushPendingFrames()
+  }
+
+  // ── Device → phone frames (protocol v2) ──
+  private fun handleDeviceFrame(msg: JSONObject) {
+    Log.d(TAG, "device -> $msg")
+    when (msg.optString("type")) {
+      "battery" -> {
+        val percent = msg.optInt("percent", -1).takeIf { it in 0..100 } ?: return
+        DeviceStatus.battery = percent
+        DeviceStatus.charging = msg.optBoolean("charging", false)
+        DeviceStatus.batteryMv = msg.optInt("mv", 0).takeIf { it > 0 }
+        DeviceStatus.batteryAt = System.currentTimeMillis()
+        if (DeviceStatus.charging || percent > LOW_BATTERY_PERCENT + 5) {
+          lowBatteryWarned = false
+        } else if (percent <= LOW_BATTERY_PERCENT && !lowBatteryWarned) {
+          lowBatteryWarned = true
+          postAlert(BATTERY_NOTIFICATION_ID, getString(R.string.device_low_battery_title),
+            getString(R.string.device_low_battery_text, percent), urgent = false)
+        }
+      }
+      "imu_event" -> {
+        val peak = msg.optDouble("peakG", 0.0)
+        when (msg.optString("event")) {
+          "crash" -> if (settings.crashAlerts) showCrashAlert(peak)
+          "park_motion" -> if (settings.parkGuard) showParkAlert(peak)
+        }
+      }
+      "call_action" -> handleCallAction(msg.optString("action"))
+      "sos_cancel" -> cancelNotification(CRASH_NOTIFICATION_ID)
+    }
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun handleCallAction(action: String) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+      ContextCompat.checkSelfPermission(this, Manifest.permission.ANSWER_PHONE_CALLS) != PackageManager.PERMISSION_GRANTED) {
+      Log.w(TAG, "call_action '$action' ignored: ANSWER_PHONE_CALLS not granted")
+      return
+    }
+    val telecom = getSystemService(Context.TELECOM_SERVICE) as? TelecomManager ?: return
+    runCatching {
+      when (action) {
+        "accept" -> telecom.acceptRingingCall()
+        "decline" -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+          @Suppress("DEPRECATION")
+          telecom.endCall()
+        }
+      }
+    }.onFailure { Log.w(TAG, "call_action '$action' failed: ${it.message}") }
+  }
+
+  private fun showCrashAlert(peakG: Double) {
+    val okIntent = PendingIntent.getService(
+      this, 0,
+      Intent(this, PiNavigationService::class.java).setAction(ACTION_CRASH_OK),
+      PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+    )
+    postAlert(
+      CRASH_NOTIFICATION_ID,
+      getString(R.string.device_crash_title),
+      getString(R.string.device_crash_text, peakG),
+      urgent = true,
+    ) { it.addAction(0, getString(R.string.device_crash_ok), okIntent) }
+  }
+
+  private fun showParkAlert(peakG: Double) {
+    val now = System.currentTimeMillis()
+    if (now - lastParkAlertAt < PARK_ALERT_DEDUPE_MS) return
+    lastParkAlertAt = now
+    postAlert(PARK_NOTIFICATION_ID, getString(R.string.device_park_title),
+      getString(R.string.device_park_text, peakG), urgent = true)
+  }
+
+  private fun postAlert(
+    id: Int,
+    title: String,
+    text: String,
+    urgent: Boolean,
+    extra: (NotificationCompat.Builder) -> Unit = {},
+  ) {
+    val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+    val builder = NotificationCompat.Builder(this, ALERT_CHANNEL_ID)
+      .setSmallIcon(R.mipmap.ic_launcher)
+      .setContentTitle(title)
+      .setContentText(text)
+      .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+      .setPriority(if (urgent) NotificationCompat.PRIORITY_MAX else NotificationCompat.PRIORITY_DEFAULT)
+      .setCategory(if (urgent) NotificationCompat.CATEGORY_ALARM else NotificationCompat.CATEGORY_STATUS)
+      .setAutoCancel(true)
+      .setContentIntent(launchAppIntent())
+    extra(builder)
+    runCatching { manager.notify(id, builder.build()) }
+  }
+
+  private fun cancelNotification(id: Int) {
+    (getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)?.cancel(id)
+  }
+
+  private fun launchAppIntent(): PendingIntent = PendingIntent.getActivity(
+    this, 1,
+    Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+  )
+
   // Queue a JSON frame; chunk it to the negotiated MTU and stream it out.
-  private fun sendFrame(json: String) {
+  // Frames that are replayed on (re)connect skip the pending buffer.
+  private fun sendFrame(json: String, bufferIfDown: Boolean = true) {
     if (rxChar == null) {
+      if (!bufferIfDown) return
       Log.d(TAG, "frame buffered (link not ready): $json")
       synchronized(writeQueue) {
         // Keep only the most recent few frames if the link isn't ready yet.
@@ -787,11 +1241,25 @@ class PiNavigationService : Service(), LocationListener {
       override fun onReceive(context: Context?, intent: Intent?) {
         if (intent?.action != TelephonyManager.ACTION_PHONE_STATE_CHANGED) return
         val state = intent.getStringExtra(TelephonyManager.EXTRA_STATE)
-        if (state != TelephonyManager.EXTRA_STATE_RINGING) return
-
-        val number = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)?.trim().orEmpty()
-        val caller = resolveCallerName(number) ?: if (number.isNotBlank()) number else "Incoming call"
-        maybeSendIncomingCall(caller, number)
+        val previous = lastPhoneState
+        lastPhoneState = state
+        when (state) {
+          TelephonyManager.EXTRA_STATE_RINGING -> {
+            @Suppress("DEPRECATION")
+            val number = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)?.trim().orEmpty()
+            val caller = resolveCallerName(number) ?: if (number.isNotBlank()) number else "Incoming call"
+            maybeSendIncomingCall(caller, number)
+          }
+          // The broadcast repeats per state; only forward real transitions.
+          TelephonyManager.EXTRA_STATE_OFFHOOK -> if (previous == TelephonyManager.EXTRA_STATE_RINGING) {
+            sendFrame(DeviceFrames.callState(active = true))
+          }
+          TelephonyManager.EXTRA_STATE_IDLE -> if (previous != null && previous != TelephonyManager.EXTRA_STATE_IDLE) {
+            sendFrame(DeviceFrames.callState(active = false))
+            // v1 frame: the CrowPanel clears its call overlay on this.
+            sendFrame(JSONObject().put("type", "call_end").toString())
+          }
+        }
       }
     }
 
@@ -817,7 +1285,7 @@ class PiNavigationService : Service(), LocationListener {
       override fun onReceive(context: Context?, intent: Intent?) {
         if (intent?.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
         val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
-        if (state == BluetoothAdapter.STATE_ON && navActive && bluetoothGatt == null) {
+        if (state == BluetoothAdapter.STATE_ON && linkWanted && bluetoothGatt == null) {
           Log.i(TAG, "Bluetooth turned ON — attempting connect")
           reconnectAttempts = 0
           connectBle()
@@ -874,12 +1342,15 @@ class PiNavigationService : Service(), LocationListener {
       NotificationManager.IMPORTANCE_LOW,
     )
     manager.createNotificationChannel(channel)
+    manager.createNotificationChannel(
+      NotificationChannel(ALERT_CHANNEL_ID, getString(R.string.device_alert_channel_name), NotificationManager.IMPORTANCE_HIGH)
+    )
   }
 
-  private fun buildNotification() = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
+  private fun buildNotification(ride: Boolean) = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
     .setSmallIcon(R.mipmap.ic_launcher)
-    .setContentTitle(getString(R.string.tracking_notification_title))
-    .setContentText(getString(R.string.tracking_notification_text))
+    .setContentTitle(getString(if (ride) R.string.tracking_notification_title else R.string.link_notification_title))
+    .setContentText(getString(if (ride) R.string.tracking_notification_text else R.string.link_notification_text))
     .setOngoing(true)
     .setSilent(true)
     .build()
@@ -902,6 +1373,10 @@ class PiNavigationService : Service(), LocationListener {
 }
 
 internal object BleNavFrameBuilder {
+  // Protocol v2 additions to `nav`: rider position in the current map_area
+  // (north-up metres), the street being ridden, and speed.
+  data class NavExtras(val area: Int?, val ax: Int, val ay: Int, val street: String, val speedKmh: Int)
+
   fun buildNavFrame(
     lat: Double,
     lng: Double,
@@ -916,6 +1391,7 @@ internal object BleNavFrameBuilder {
     maxRoutePoints: Int,
     maxJunctionRoadPoints: Int,
     nowMillis: Long,
+    extras: NavExtras? = null,
   ): String {
     val hRad = Math.toRadians(heading)
     val route = JSONArray().put(JSONArray().put(0).put(0))
@@ -952,7 +1428,7 @@ internal object BleNavFrameBuilder {
     var remTime = step.durationS * curFrac
     for (duration in remainingStepDurations) remTime += duration
 
-    return JSONObject()
+    val frame = JSONObject()
       .put("type", "nav")
       .put("heading", heading.roundToInt())
       .put("distanceToTurn", distToEnd.roundToInt())
@@ -963,13 +1439,23 @@ internal object BleNavFrameBuilder {
       .put("eta", nowMillis + (remTime * 1000).toLong())
       .put("junctionRoads", buildLocalJunctionRoads(lat, lng, hRad, step, maxJunctionRoadPoints))
       .put("arrived", false)
-      .toString()
+    if (extras != null) {
+      if (extras.area != null) {
+        frame.put("area", extras.area).put("ax", extras.ax).put("ay", extras.ay)
+      }
+      if (extras.street.isNotBlank()) frame.put("street", extras.street)
+      frame.put("speed", extras.speedKmh)
+    }
+    return frame.toString()
   }
 
+  // Pure great-circle distance (m) so the builder runs in JVM unit tests.
   fun haversine(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Double {
-    val results = FloatArray(1)
-    Location.distanceBetween(lat1, lng1, lat2, lng2, results)
-    return results[0].toDouble()
+    val dLat = Math.toRadians(lat2 - lat1)
+    val dLng = Math.toRadians(lng2 - lng1)
+    val a = Math.sin(dLat / 2).let { it * it } +
+      Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) * Math.sin(dLng / 2).let { it * it }
+    return 2 * 6_371_008.8 * Math.asin(Math.sqrt(a.coerceIn(0.0, 1.0)))
   }
 
   private fun buildLocalJunctionRoads(
