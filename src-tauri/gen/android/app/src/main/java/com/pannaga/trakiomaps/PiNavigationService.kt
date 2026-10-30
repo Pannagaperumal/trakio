@@ -279,8 +279,8 @@ class PiNavigationService : Service(), LocationListener {
         // summary now (new totals); on first start it flushes after discovery.
         if (servicesReady) routeStartFrame?.let { sendFrame(it) }
         refreshMapArea(fixLat, fixLng)
-        // A passive autoConnect left over from the idle link can take a while;
-        // swap it for a direct connect now that we're riding.
+        // Restart a connect attempt still pending from the idle link so the
+        // ride doesn't wait out its timeout.
         if (bluetoothGatt != null && !servicesReady) disconnectBle()
         connectBle()
         registerPhoneStateReceiver()
@@ -884,9 +884,11 @@ class PiNavigationService : Service(), LocationListener {
       bonded.firstOrNull { TARGET_NAME_SUBSTR.isNotEmpty() && (it.name ?: "").contains(TARGET_NAME_SUBSTR, ignoreCase = true) }
         ?: bonded.first()
 
-    // Riding: autoConnect=false → fast direct connect, we retry ourselves.
-    // Idle: autoConnect=true → the controller waits for the device to advertise.
-    val autoConnect = !navActive
+    // Always a direct connect (active scan, ~30 s timeout) and we retry
+    // ourselves. autoConnect=true looked cheaper for the idle link, but MIUI's
+    // stack never completed background connects to this device ("device type
+    // not BLE"), so the link silently stayed down between rides.
+    val autoConnect = false
     Log.i(TAG, "connectBle: connecting to ${target.name ?: "?"} (${target.address}), autoConnect=$autoConnect")
     DeviceStatus.deviceName = target.name
     rxChar = null
