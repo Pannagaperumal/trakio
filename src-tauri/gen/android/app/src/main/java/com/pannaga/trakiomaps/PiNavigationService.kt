@@ -122,6 +122,13 @@ class PiNavigationService : Service(), LocationListener {
     private const val RECONNECT_MAX_DELAY_MS = 15000L
     private const val MTU_FALLBACK_DELAY_MS = 1500L   // discover services if MTU cb never fires
     private const val WRITE_TIMEOUT_MS = 2000L        // recover if a write callback is lost
+    // Nav frames are superseded 4×/s, so when this many chunks are already
+    // waiting we skip one rather than let the queue grow. Other frames are
+    // never dropped or cut, so a map_area always arrives whole.
+    private const val NAV_SKIP_BACKLOG_CHUNKS = 24
+    // Re-send the current map_area now and then, so one lost on a flaky link
+    // (or by a device reboot mid-ride) heals itself.
+    private const val MAP_AREA_REPLAY_MS = 20_000L
   }
 
   private var locationManager: LocationManager? = null
@@ -155,6 +162,12 @@ class PiNavigationService : Service(), LocationListener {
   private var gpsIntervalMs = 0L
   private var lastEmitAt = 0L
   private var lastNavKey = ""
+  private var lastAreaSentAt = 0L
+  private var lastGpsFixAt = 0L
+  private val speedFilter = NavSmoothing.SpeedFilter()
+  private val turnDistFilter = NavSmoothing.TurnDistanceFilter()
+  private var navSkipLoggedAt = 0L
+  private var writeRetryPending = false
   private var lastParkAlertAt = 0L
   private var lowBatteryWarned = false
   private val deviceReader = DeviceFrames.LineReader()
@@ -177,7 +190,10 @@ class PiNavigationService : Service(), LocationListener {
   // the display sees small, continuous changes between 1 Hz GPS fixes.
   private val emitRunnable = object : Runnable {
     override fun run() {
-      if (navActive && !navArrived) emitSmoothFrame()
+      if (navActive && !navArrived) {
+        emitSmoothFrame()
+        replayMapAreaIfDue()
+      }
       if (navActive) mainHandler.postDelayed(this, EMIT_TICK_MS)
     }
   }
@@ -243,6 +259,8 @@ class PiNavigationService : Service(), LocationListener {
         DeviceStatus.mode = "ride"
         navArrived = false
         navStepIdx = 0
+        speedFilter.reset()
+        turnDistFilter.reset()
         smoothInit = false
         fixTimeMs = 0L
         if (!parseRoutePayload(payload)) {
@@ -340,6 +358,16 @@ class PiNavigationService : Service(), LocationListener {
       return
     }
 
+    // Drop network fixes while GPS is live and fixes too inaccurate to use:
+    // mixing them in caused 200+ km/h speed spikes and jumpy turn distances.
+    val isGps = location.provider == LocationManager.GPS_PROVIDER
+    val nowElapsed = SystemClock.elapsedRealtime()
+    if (!NavSmoothing.acceptFix(isGps, if (location.hasAccuracy()) location.accuracy else null,
+        nowElapsed - lastGpsFixAt, fixTimeMs != 0L)) {
+      return
+    }
+    if (isGps) lastGpsFixAt = nowElapsed
+
     while (navStepIdx < routeSteps.lastIndex) {
       val distToEnd = distanceTo(location, routeSteps[navStepIdx].endLocation)
       if (distToEnd < ADVANCE_THRESHOLD_METERS) {
@@ -351,7 +379,6 @@ class PiNavigationService : Service(), LocationListener {
 
     val step = routeSteps.getOrNull(navStepIdx) ?: return
     val distToEnd = distanceTo(location, step.endLocation)
-    val rawHeading = if (location.hasBearing()) location.bearing.toDouble() else targetHeading
 
     // Record this fix; the high-rate emitter (emitSmoothFrame) interpolates
     // between fixes so the display moves continuously rather than in 1 Hz jumps.
@@ -360,12 +387,12 @@ class PiNavigationService : Service(), LocationListener {
     fixLat = location.latitude
     fixLng = location.longitude
     fixTimeMs = now
-    fixSpeed = when {
-      location.hasSpeed() -> location.speed.toDouble()
-      prevFixTimeMs != 0L && now > prevFixTimeMs ->
-        BleNavFrameBuilder.haversine(prevFixLat, prevFixLng, fixLat, fixLng) / ((now - prevFixTimeMs) / 1000.0)
-      else -> fixSpeed
-    }
+    val derived = if (prevFixTimeMs != 0L && now - prevFixTimeMs >= 500L) {
+      BleNavFrameBuilder.haversine(prevFixLat, prevFixLng, fixLat, fixLng) / ((now - prevFixTimeMs) / 1000.0)
+    } else null
+    fixSpeed = speedFilter.update(if (location.hasSpeed()) location.speed.toDouble() else null, derived)
+    // Bearing is noise when standing still — hold the last heading so the map doesn't spin.
+    val rawHeading = if (location.hasBearing() && fixSpeed > STOPPED_SPEED) location.bearing.toDouble() else targetHeading
     targetHeading = rawHeading
     if (!smoothInit) {
       smoothHeading = rawHeading
@@ -411,7 +438,7 @@ class PiNavigationService : Service(), LocationListener {
 
     // Predict where we are now from the last fix using speed + heading.
     val dt = ((System.currentTimeMillis() - fixTimeMs) / 1000.0).coerceAtLeast(0.0)
-    val travel = (fixSpeed * dt).coerceAtMost(MAX_EXTRAPOLATION_M)
+    val travel = if (fixSpeed > STOPPED_SPEED) (fixSpeed * dt).coerceAtMost(MAX_EXTRAPOLATION_M) else 0.0
     val rad = Math.toRadians(smoothHeading)
     val predLat = fixLat + (travel * Math.cos(rad)) / METERS_PER_DEG
     val predLng = fixLng + (travel * Math.sin(rad)) / (METERS_PER_DEG * Math.cos(Math.toRadians(fixLat)))
@@ -430,14 +457,15 @@ class PiNavigationService : Service(), LocationListener {
     }
     if (now - lastEmitAt < interval) return
 
-    val distToEnd = BleNavFrameBuilder.haversine(emitLat, emitLng, step.endLocation.lat, step.endLocation.lng)
+    val distToEnd = turnDistFilter.update(navStepIdx,
+      BleNavFrameBuilder.haversine(emitLat, emitLng, step.endLocation.lat, step.endLocation.lng))
     val extras = navExtras(emitLat, emitLng)
     val key = "$navStepIdx|${smoothHeading.roundToInt()}|${distToEnd.roundToInt()}|" +
       "${extras.area}|${extras.ax}|${extras.ay}|${extras.speedKmh}|${extras.street}"
     if (key == lastNavKey && now - lastEmitAt < HEARTBEAT_MS) return
     lastNavKey = key
     lastEmitAt = now
-    sendFrame(computeMiniMap(emitLat, emitLng, smoothHeading, step, distToEnd, extras))
+    sendFrame(computeMiniMap(emitLat, emitLng, smoothHeading, step, distToEnd, extras), droppable = true)
   }
 
   private fun navExtras(lat: Double, lng: Double): BleNavFrameBuilder.NavExtras {
@@ -474,6 +502,16 @@ class PiNavigationService : Service(), LocationListener {
     Log.i(TAG, "map_area #${area.id}: ${area.roads.size} roads, ${area.frame.length} B")
     // Not buffered while the link is down: the current area is replayed on connect.
     sendFrame(area.frame, bufferIfDown = false)
+    lastAreaSentAt = SystemClock.elapsedRealtime()
+  }
+
+  private fun replayMapAreaIfDue() {
+    val area = currentArea ?: return
+    if (!servicesReady) return
+    val now = SystemClock.elapsedRealtime()
+    if (now - lastAreaSentAt < MAP_AREA_REPLAY_MS) return
+    lastAreaSentAt = now
+    enqueueChunks(area.frame)
   }
 
   // Corridor fetched by the WebView after the ride already started.
@@ -740,6 +778,8 @@ class PiNavigationService : Service(), LocationListener {
     navActive = false
     navArrived = false
     navStepIdx = 0
+    speedFilter.reset()
+    turnDistFilter.reset()
     smoothInit = false
     mainHandler.removeCallbacks(emitRunnable)
     routeSteps = emptyList()
@@ -1146,7 +1186,18 @@ class PiNavigationService : Service(), LocationListener {
 
   // Queue a JSON frame; chunk it to the negotiated MTU and stream it out.
   // Frames that are replayed on (re)connect skip the pending buffer.
-  private fun sendFrame(json: String, bufferIfDown: Boolean = true) {
+  private fun sendFrame(json: String, bufferIfDown: Boolean = true, droppable: Boolean = false) {
+    if (droppable && rxChar != null) {
+      val backlog = synchronized(writeQueue) { writeQueue.size }
+      if (backlog > NAV_SKIP_BACKLOG_CHUNKS) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - navSkipLoggedAt > 5000) {
+          navSkipLoggedAt = now
+          Log.w(TAG, "link backed up ($backlog chunks queued) — skipping nav frames")
+        }
+        return
+      }
+    }
     if (rxChar == null) {
       if (!bufferIfDown) return
       Log.d(TAG, "frame buffered (link not ready): $json")
@@ -1180,8 +1231,8 @@ class PiNavigationService : Service(), LocationListener {
         writeQueue.addLast(bytes.copyOfRange(offset, end))
         offset = end
       }
-      // Cap backlog so a stalled link can't grow the queue without bound.
-      while (writeQueue.size > 200) writeQueue.pollFirst()
+      // No chunk-level cap: dropping chunks cuts frames in half. The backlog
+      // stays bounded because nav frames are skipped while it's high.
     }
     processWriteQueue()
   }
@@ -1226,12 +1277,20 @@ class PiNavigationService : Service(), LocationListener {
 
     if (!ok) {
       // Write rejected (e.g. busy) — requeue the chunk and retry shortly.
-      Log.w(TAG, "writeCharacteristic rejected — requeueing chunk (${chunk.size}B), retrying")
-      synchronized(writeQueue) {
+      // Only one retry in flight: each rejection used to schedule its own,
+      // and the pile-up kept the stack busy (1000+ rejections a minute).
+      val schedule = synchronized(writeQueue) {
         writeQueue.addFirst(chunk)
         writing = false
+        if (writeRetryPending) false else { writeRetryPending = true; true }
       }
-      mainHandler.postDelayed({ processWriteQueue() }, 50L)
+      if (schedule) {
+        Log.d(TAG, "writeCharacteristic busy — retrying (${chunk.size}B)")
+        mainHandler.postDelayed({
+          synchronized(writeQueue) { writeRetryPending = false }
+          processWriteQueue()
+        }, 50L)
+      }
       return
     }
 
